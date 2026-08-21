@@ -5,9 +5,9 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Bundle
 import com.amap.api.location.AMapLocationClient
-import com.amap.api.maps.AMap
 import com.amap.api.maps.CameraUpdateFactory
 import com.amap.api.maps.MapsInitializer
+import com.amap.api.maps.model.MyLocationStyle
 import com.amap.api.navi.AMapNaviView
 import com.amap.api.navi.AMapNaviViewOptions
 
@@ -33,7 +33,6 @@ class MainActivity : Activity() {
             setRefreshButtonEnabled(false)
             setNaviStatusBarEnabled(false)
             setTilt(0)
-            setPointToCenter(0.5, 0.5)
             setAutoLockCar(false)
         }
 
@@ -63,7 +62,10 @@ class MainActivity : Activity() {
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun enableLocation() {
-        naviView.map.setMyLocationType(AMap.LOCATION_TYPE_LOCATE)
+        val locationStyle = MyLocationStyle().apply {
+            myLocationType(MyLocationStyle.LOCATION_TYPE_LOCATION_ROTATE)
+        }
+        naviView.map.setMyLocationStyle(locationStyle)
         naviView.map.isMyLocationEnabled = true
     }
 
