@@ -1,7 +1,9 @@
 package com.garan.tesnav.export
 
 import com.garan.tesnav.model.NavigationState
+import com.garan.tesnav.model.CommaState
 import com.google.gson.Gson
+import com.google.gson.annotations.SerializedName
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,10 +26,22 @@ data class NavigationWireEnvelope(
     val state: NavigationState,
 )
 
+private data class CommaWireEnvelope(
+    val schemaVersion: Int,
+    val timestampMs: Long,
+    val data: CommaWireData?,
+)
+
+private data class CommaWireData(
+    @SerializedName("is_tesla_nav_active")
+    val isTeslaNavActive: Boolean,
+)
+
 /** Persistent WebSocket transport that publishes the newest snapshot every 200 ms. */
 class WebSocketNavigationDataExporter(
     private val config: ExportConfig,
     private val stateProvider: () -> NavigationState?,
+    private val onCommaState: (CommaState) -> Unit,
 ) : NavigationDataExporter {
     private val mutableConnectionState = MutableStateFlow(ExportConnectionState.STOPPED)
     override val connectionState: StateFlow<ExportConnectionState> = mutableConnectionState
@@ -81,6 +95,20 @@ class WebSocketNavigationDataExporter(
                 mutableLastError.value = null
                 sendLatestSnapshot()
                 startFixedRatePublisher()
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val envelope = runCatching {
+                    gson.fromJson(text, CommaWireEnvelope::class.java)
+                }.getOrNull() ?: return
+                if (envelope.schemaVersion != 1) return
+                val data = envelope.data ?: return
+                onCommaState(
+                    CommaState(
+                        timestampMs = envelope.timestampMs,
+                        isTeslaNavActive = data.isTeslaNavActive,
+                    ),
+                )
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {

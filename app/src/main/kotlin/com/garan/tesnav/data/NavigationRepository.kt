@@ -45,7 +45,11 @@ class NavigationRepository(
 
     fun currentPath(): AMapNaviPath? = navi?.naviPath
 
-    fun planRoute(latitude: Double, longitude: Double): Boolean {
+    fun planRoute(
+        latitude: Double,
+        longitude: Double,
+        startedFromTeslaSync: Boolean = false,
+    ): Boolean {
         if (latitude !in -90.0..90.0 || longitude !in -180.0..180.0) return false
         val engine = navi ?: return false
         val current = stateStore.state.value
@@ -62,6 +66,7 @@ class NavigationRepository(
         update {
             clearRouteValues().copy(
                 navigationMode = NavigationMode.IDLE,
+                startedFromTeslaSync = startedFromTeslaSync,
                 errorMessage = null,
             )
         }

@@ -171,9 +171,7 @@ class NavigationActivity : Activity() {
                 SettingsDialog(
                     context = this,
                     scope = activityScope,
-                    navigationState = service.stateStore.state,
-                    connectionState = service.exporter.connectionState,
-                    connectionError = service.exporter.lastError,
+                    service = service,
                 ).show()
             } ?: toast("后台导航服务尚未连接")
         }

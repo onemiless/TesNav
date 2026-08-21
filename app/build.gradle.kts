@@ -21,6 +21,8 @@ android {
         buildConfigField("String", "WEBSOCKET_URL", "\"${providers.gradleProperty("WEBSOCKET_URL").orNull ?: "ws://192.168.53.232:7766/amap-navigation"}\"")
         buildConfigField("String", "API_TOKEN", "\"${providers.gradleProperty("API_TOKEN").orNull ?: ""}\"")
         buildConfigField("long", "EXPORT_INTERVAL_MS", "${providers.gradleProperty("EXPORT_INTERVAL_MS").orNull ?: "200"}L")
+        buildConfigField("String", "HOME_ASSISTANT_URL", "\"${providers.gradleProperty("HOME_ASSISTANT_URL").orNull ?: ""}\"")
+        buildConfigField("String", "HOME_ASSISTANT_TOKEN", "\"${providers.gradleProperty("HOME_ASSISTANT_TOKEN").orNull ?: ""}\"")
     }
 
     buildTypes {

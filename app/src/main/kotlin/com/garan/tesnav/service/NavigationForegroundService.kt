@@ -19,14 +19,23 @@ import com.amap.api.maps.MapsInitializer
 import com.amap.api.navi.model.AMapNaviPath
 import com.garan.tesnav.BuildConfig
 import com.garan.tesnav.MainActivity
+import com.garan.tesnav.data.CommaStateStore
 import com.garan.tesnav.data.NavigationRepository
 import com.garan.tesnav.data.NavigationStateStore
 import com.garan.tesnav.export.ExportConfig
+import com.garan.tesnav.export.ExportConnectionState
 import com.garan.tesnav.export.WebSocketNavigationDataExporter
+import com.garan.tesnav.homeassistant.HomeAssistantConnectionState
+import com.garan.tesnav.homeassistant.HomeAssistantNavigationClient
+import com.garan.tesnav.homeassistant.TeslaNavigationDestination
+import com.garan.tesnav.model.NavigationState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /** Keeps the navigation engine, state callbacks, and WebSocket alive in background. */
@@ -37,9 +46,22 @@ class NavigationForegroundService : Service() {
 
     lateinit var stateStore: NavigationStateStore
         private set
+    lateinit var commaStateStore: CommaStateStore
+        private set
     lateinit var exporter: WebSocketNavigationDataExporter
         private set
+    lateinit var homeAssistantClient: HomeAssistantNavigationClient
+        private set
     private lateinit var repository: NavigationRepository
+
+    private val mutableTeslaSyncEnabled = MutableStateFlow(false)
+    val teslaSyncEnabled: StateFlow<Boolean> = mutableTeslaSyncEnabled.asStateFlow()
+
+    private var commaStateReady = false
+    private var lastTeslaNavActive: Boolean? = null
+    private var routeRequestDestination: TeslaNavigationDestination? = null
+    private var activeTeslaDestination: TeslaNavigationDestination? = null
+    private var failedTeslaDestination: TeslaNavigationDestination? = null
 
     inner class LocalBinder : Binder() {
         fun getService(): NavigationForegroundService = this@NavigationForegroundService
@@ -57,6 +79,9 @@ class NavigationForegroundService : Service() {
         AMapLocationClient.updatePrivacyAgree(applicationContext, true)
 
         stateStore = NavigationStateStore()
+        commaStateStore = CommaStateStore()
+        homeAssistantClient = HomeAssistantNavigationClient()
+        mutableTeslaSyncEnabled.value = preferences().getBoolean(HA_SYNC_ENABLED, false)
         repository = NavigationRepository(applicationContext, stateStore)
         repository.initialize()
         exporter = WebSocketNavigationDataExporter(
@@ -67,9 +92,11 @@ class NavigationForegroundService : Service() {
                 intervalMs = BuildConfig.EXPORT_INTERVAL_MS,
             ),
             stateProvider = { stateStore.state.value },
+            onCommaState = commaStateStore::set,
         )
-        exporter.start()
         observeRuntime()
+        exporter.start()
+        if (mutableTeslaSyncEnabled.value) startHomeAssistant()
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -92,7 +119,16 @@ class NavigationForegroundService : Service() {
     fun stopNavigation() = repository.stopNavigation()
     fun currentPath(): AMapNaviPath? = repository.currentPath()
 
+    fun setTeslaSyncEnabled(enabled: Boolean) {
+        if (mutableTeslaSyncEnabled.value == enabled) return
+        mutableTeslaSyncEnabled.value = enabled
+        preferences().edit().putBoolean(HA_SYNC_ENABLED, enabled).apply()
+        resetTeslaSyncTracking()
+        if (enabled) startHomeAssistant() else homeAssistantClient.stop()
+    }
+
     override fun onDestroy() {
+        if (::homeAssistantClient.isInitialized) homeAssistantClient.release()
         if (::exporter.isInitialized) exporter.stop()
         if (::repository.isInitialized) repository.release()
         releaseWakeLock()
@@ -101,9 +137,122 @@ class NavigationForegroundService : Service() {
     }
 
     private fun observeRuntime() {
-        scope.launch { stateStore.state.collect { updateNotification() } }
-        scope.launch { exporter.connectionState.collect { updateNotification() } }
+        scope.launch {
+            stateStore.state.collect { state ->
+                handleTeslaRouteProgress(state)
+                tryStartTeslaNavigation()
+                updateNotification()
+            }
+        }
+        scope.launch {
+            exporter.connectionState.collect { state ->
+                if (state != ExportConnectionState.CONNECTED) {
+                    commaStateReady = false
+                    lastTeslaNavActive = null
+                }
+                updateNotification()
+            }
+        }
+        scope.launch {
+            commaStateStore.state.collect { state ->
+                if (state.timestampMs == 0L || exporter.connectionState.value != ExportConnectionState.CONNECTED) return@collect
+                commaStateReady = true
+                handleTeslaNavigationActive(state.isTeslaNavActive)
+            }
+        }
+        scope.launch {
+            homeAssistantClient.navigationState.collect {
+                tryStartTeslaNavigation()
+            }
+        }
+        scope.launch {
+            homeAssistantClient.connectionState.collect {
+                tryStartTeslaNavigation()
+                updateNotification()
+            }
+        }
     }
+
+    private fun startHomeAssistant() {
+        homeAssistantClient.start(BuildConfig.HOME_ASSISTANT_URL, BuildConfig.HOME_ASSISTANT_TOKEN)
+    }
+
+    private fun handleTeslaNavigationActive(active: Boolean) {
+        if (!mutableTeslaSyncEnabled.value) return
+        if (lastTeslaNavActive == active) {
+            if (active) tryStartTeslaNavigation()
+            return
+        }
+        lastTeslaNavActive = active
+        if (active) {
+            failedTeslaDestination = null
+            handleTeslaRouteProgress(stateStore.state.value)
+            tryStartTeslaNavigation()
+        } else {
+            routeRequestDestination = null
+            activeTeslaDestination = null
+            failedTeslaDestination = null
+            repository.stopNavigation()
+        }
+    }
+
+    private fun tryStartTeslaNavigation() {
+        if (!mutableTeslaSyncEnabled.value || !commaStateReady) return
+        if (exporter.connectionState.value != ExportConnectionState.CONNECTED) return
+        if (lastTeslaNavActive != true) return
+        if (homeAssistantClient.connectionState.value != HomeAssistantConnectionState.CONNECTED) return
+
+        val homeAssistantState = homeAssistantClient.navigationState.value
+        if (homeAssistantState.navigationActive != true) return
+        val destination = homeAssistantState.destination ?: return
+        if (destination == activeTeslaDestination || destination == routeRequestDestination || destination == failedTeslaDestination) return
+
+        val navigationState = stateStore.state.value
+        if (navigationState.latitude == null || navigationState.longitude == null) return
+        val accepted = repository.planRoute(
+            latitude = destination.latitude,
+            longitude = destination.longitude,
+            startedFromTeslaSync = true,
+        )
+        if (accepted) {
+            routeRequestDestination = destination
+        } else {
+            failedTeslaDestination = destination
+        }
+    }
+
+    private fun handleTeslaRouteProgress(state: NavigationState) {
+        val requestedDestination = routeRequestDestination ?: return
+        if (!mutableTeslaSyncEnabled.value || !commaStateReady || lastTeslaNavActive != true) return
+
+        if (state.routePlanned && state.startedFromTeslaSync) {
+            val latestDestination = homeAssistantClient.navigationState.value.destination
+            routeRequestDestination = null
+            if (latestDestination != requestedDestination) {
+                tryStartTeslaNavigation()
+            } else if (repository.startRealtime()) {
+                activeTeslaDestination = requestedDestination
+                failedTeslaDestination = null
+            } else {
+                failedTeslaDestination = requestedDestination
+            }
+        } else if (state.errorMessage?.startsWith("路线规划失败") == true ||
+            state.errorMessage?.startsWith("路线规划请求失败") == true
+        ) {
+            routeRequestDestination = null
+            failedTeslaDestination = requestedDestination
+        }
+    }
+
+    private fun resetTeslaSyncTracking() {
+        commaStateReady = false
+        lastTeslaNavActive = null
+        routeRequestDestination = null
+        activeTeslaDestination = null
+        failedTeslaDestination = null
+    }
+
+    private fun preferences() = getSharedPreferences(HA_PREFS, MODE_PRIVATE)
 
     private fun updateNotification() {
         if (!::stateStore.isInitialized || !::exporter.isInitialized) return
@@ -181,6 +330,8 @@ class NavigationForegroundService : Service() {
         private const val ACTION_STOP_SERVICE = "com.garan.tesnav.action.STOP_RUNTIME"
         private const val CHANNEL_ID = "tesnav_navigation_runtime"
         private const val NOTIFICATION_ID = 1001
+        const val HA_PREFS = "home_assistant_sync"
+        const val HA_SYNC_ENABLED = "enabled"
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(
