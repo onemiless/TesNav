@@ -1,0 +1,9 @@
+[versions]
+agp = "9.3.1"
+amapNavi = "11.2.100_3dmap11.2.100_loc11.2.100_sea9.8.1"
+
+[libraries]
+amap-navi = { group = "com.amap.api", name = "navi-3dmap-location-search", version.ref = "amapNavi" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
