@@ -26,11 +26,13 @@ class NavigationRepository(
     context: Context,
     private val stateStore: NavigationStateStore,
     private val overspeedEvaluator: OverspeedEvaluator = OverspeedEvaluator(),
+    private val onRouteChanged: (AMapNaviPath?) -> Unit = {},
 ) : SimpleNaviListener() {
     private val appContext = context.applicationContext
     private var navi: AMapNavi? = null
     private var routeCalculationPending = false
     private var requestedNavigationMode: NavigationMode? = null
+    private var publishedRouteSignature: String? = null
 
     fun initialize(): Result<Unit> = runCatching {
         navi = AMapNavi.getInstance(appContext).also {
@@ -130,6 +132,7 @@ class NavigationRepository(
         requestedNavigationMode = null
         navi?.stopNavi()
         update { clearRouteValues().copy(navigationMode = NavigationMode.IDLE, errorMessage = null) }
+        clearPublishedRoute()
     }
 
     fun release() {
@@ -279,12 +282,12 @@ class NavigationRepository(
     override fun onCalculateRouteSuccess(result: AMapCalcRouteResult?) = routeSucceeded()
 
     private fun routeSucceeded() {
-        if (!routeCalculationPending) return
+        if (!routeCalculationPending && !stateStore.state.value.routePlanned) return
         routeCalculationPending = false
         val path = navi?.naviPath
         update {
             copy(
-                navigationMode = NavigationMode.ROUTE_PLANNED,
+                navigationMode = if (routePlanned) navigationMode else NavigationMode.ROUTE_PLANNED,
                 simulationPaused = false,
                 routePlanned = true,
                 routeRemainDistanceMeters = path?.allLength,
@@ -294,6 +297,7 @@ class NavigationRepository(
                 errorMessage = null,
             )
         }
+        publishRouteIfChanged(path)
     }
 
     override fun onCalculateRouteFailure(errorCode: Int) = routeFailed("路线规划失败：$errorCode")
@@ -304,6 +308,7 @@ class NavigationRepository(
         if (!routeCalculationPending) return
         routeCalculationPending = false
         update { clearRouteValues().copy(errorMessage = message) }
+        clearPublishedRoute()
     }
 
     override fun onReCalculateRouteForYaw() = update { copy(errorMessage = "检测到偏航，正在重新规划") }
@@ -325,6 +330,27 @@ class NavigationRepository(
 
     private fun update(transform: com.garan.tesnav.model.NavigationState.() -> com.garan.tesnav.model.NavigationState) {
         stateStore.update(transform)
+    }
+
+    private fun publishRouteIfChanged(path: AMapNaviPath?) {
+        val coordinates = path?.coordList.orEmpty()
+        if (path == null || coordinates.size < 2) return
+        val first = coordinates.first()
+        val last = coordinates.last()
+        val geometryHash = coordinates.fold(1L) { hash, point ->
+            31L * (31L * hash + point.latitude.toBits()) + point.longitude.toBits()
+        }
+        val signature = "${path.pathid}:${path.allLength}:${coordinates.size}:" +
+            "${first.latitude}:${first.longitude}:${last.latitude}:${last.longitude}:$geometryHash"
+        if (signature == publishedRouteSignature) return
+        publishedRouteSignature = signature
+        onRouteChanged(path)
+    }
+
+    private fun clearPublishedRoute() {
+        if (publishedRouteSignature == null) return
+        publishedRouteSignature = null
+        onRouteChanged(null)
     }
 
     private fun com.garan.tesnav.model.NavigationState.clearRouteValues() = copy(

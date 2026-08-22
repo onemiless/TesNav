@@ -2,9 +2,12 @@ package com.garan.tesnav.export
 
 import com.garan.tesnav.model.NavigationState
 import com.garan.tesnav.model.CommaState
+import com.garan.tesnav.model.GeoPoint
+import com.garan.tesnav.util.RouteGeometrySimplifier
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +27,21 @@ import okhttp3.WebSocketListener
 data class NavigationWireEnvelope(
     val schemaVersion: Int = 1,
     val state: NavigationState,
+)
+
+data class RouteWireEnvelope(
+    val schemaVersion: Int = 1,
+    val route: RouteWireData,
+)
+
+data class RouteWireData(
+    val revision: Long,
+    val available: Boolean,
+    val pathId: Long? = null,
+    val totalDistanceMeters: Int? = null,
+    val sourcePointCount: Int = 0,
+    val toleranceMeters: Double? = null,
+    val points: List<GeoPoint> = emptyList(),
 )
 
 private data class CommaWireEnvelope(
@@ -60,6 +78,8 @@ class WebSocketNavigationDataExporter(
     @Volatile private var socket: WebSocket? = null
     private var reconnectJob: Job? = null
     private var publisherJob: Job? = null
+    private val routeRevision = AtomicLong(0L)
+    @Volatile private var latestRouteEnvelope: RouteWireEnvelope? = null
 
     override fun start() {
         if (!config.enabled || config.webSocketUrl.isBlank() || running) return
@@ -94,6 +114,7 @@ class WebSocketNavigationDataExporter(
                 mutableConnectionState.value = ExportConnectionState.CONNECTED
                 mutableLastError.value = null
                 sendLatestSnapshot()
+                sendLatestRoute()
                 startFixedRatePublisher()
             }
 
@@ -125,12 +146,64 @@ class WebSocketNavigationDataExporter(
         })
     }
 
+    fun publishRoute(pathId: Long, totalDistanceMeters: Int, points: List<GeoPoint>) {
+        val revision = routeRevision.incrementAndGet()
+        val sourcePoints = points.toList()
+        scope.launch {
+            val simplified = RouteGeometrySimplifier.simplifyForViewport(
+                points = sourcePoints,
+                viewportWidthPixels = ROUTE_REFERENCE_WIDTH_PIXELS,
+                viewportHeightPixels = ROUTE_REFERENCE_HEIGHT_PIXELS,
+                tolerancePixels = ROUTE_TOLERANCE_PIXELS,
+            )
+            if (routeRevision.get() != revision) return@launch
+            val envelope = RouteWireEnvelope(
+                route = RouteWireData(
+                    revision = revision,
+                    available = true,
+                    pathId = pathId,
+                    totalDistanceMeters = totalDistanceMeters,
+                    sourcePointCount = sourcePoints.size,
+                    toleranceMeters = simplified.toleranceMeters,
+                    points = simplified.points,
+                ),
+            )
+            latestRouteEnvelope = envelope
+            sendRoute(envelope)
+        }
+    }
+
+    fun clearRoute() {
+        val revision = routeRevision.incrementAndGet()
+        val envelope = RouteWireEnvelope(
+            route = RouteWireData(
+                revision = revision,
+                available = false,
+            ),
+        )
+        latestRouteEnvelope = envelope
+        sendRoute(envelope)
+    }
+
     @Synchronized
     private fun sendLatestSnapshot() {
         val state = stateProvider() ?: return
         val sent = socket?.send(gson.toJson(NavigationWireEnvelope(state = state))) == true
         if (sent) mutableLastError.value = null
         else if (running) scheduleReconnect("WebSocket 发送失败")
+    }
+
+    @Synchronized
+    private fun sendLatestRoute() {
+        latestRouteEnvelope?.let(::sendRoute)
+    }
+
+    @Synchronized
+    private fun sendRoute(envelope: RouteWireEnvelope) {
+        if (mutableConnectionState.value != ExportConnectionState.CONNECTED) return
+        val sent = socket?.send(gson.toJson(envelope)) == true
+        if (sent) mutableLastError.value = null
+        else if (running) scheduleReconnect("WebSocket 路线发送失败")
     }
 
     @Synchronized
@@ -161,5 +234,11 @@ class WebSocketNavigationDataExporter(
                 waitMs = (waitMs * 2).coerceAtMost(10_000L)
             }
         }
+    }
+
+    private companion object {
+        const val ROUTE_REFERENCE_WIDTH_PIXELS = 1920.0
+        const val ROUTE_REFERENCE_HEIGHT_PIXELS = 1080.0
+        const val ROUTE_TOLERANCE_PIXELS = 1.5
     }
 }

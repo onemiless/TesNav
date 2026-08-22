@@ -28,6 +28,7 @@ import com.garan.tesnav.export.WebSocketNavigationDataExporter
 import com.garan.tesnav.homeassistant.HomeAssistantConnectionState
 import com.garan.tesnav.homeassistant.HomeAssistantNavigationClient
 import com.garan.tesnav.homeassistant.TeslaNavigationDestination
+import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.model.NavigationState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -82,7 +83,18 @@ class NavigationForegroundService : Service() {
         commaStateStore = CommaStateStore()
         homeAssistantClient = HomeAssistantNavigationClient()
         mutableTeslaSyncEnabled.value = preferences().getBoolean(HA_SYNC_ENABLED, false)
-        repository = NavigationRepository(applicationContext, stateStore)
+        repository = NavigationRepository(applicationContext, stateStore) { path ->
+            if (!::exporter.isInitialized) return@NavigationRepository
+            if (path == null) {
+                exporter.clearRoute()
+            } else {
+                exporter.publishRoute(
+                    pathId = path.pathid,
+                    totalDistanceMeters = path.allLength,
+                    points = path.coordList.orEmpty().map { GeoPoint(it.latitude, it.longitude) },
+                )
+            }
+        }
         repository.initialize()
         exporter = WebSocketNavigationDataExporter(
             config = ExportConfig(

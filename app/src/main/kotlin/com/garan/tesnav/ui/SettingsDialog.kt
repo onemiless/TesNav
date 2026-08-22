@@ -18,10 +18,10 @@ import com.amap.api.navi.model.AMapNaviPath
 import com.garan.tesnav.export.ExportConnectionState
 import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.service.NavigationForegroundService
+import com.garan.tesnav.util.RouteGeometrySimplifier
 import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.cos
-import kotlin.math.hypot
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlinx.coroutines.CoroutineScope
@@ -317,7 +317,7 @@ class SettingsDialog(
 
     private fun renderSimplifiedRoute(
         originalPoints: List<GeoPoint>,
-        result: SimplificationResult,
+        result: RouteGeometrySimplifier.Result,
         titleView: TextView,
         statsView: TextView,
         overviewView: RouteOverviewView,
@@ -345,57 +345,18 @@ class SettingsDialog(
         overviewView.setRoute(simplifiedPoints)
     }
 
-    private fun simplifyRouteForOverview(points: List<GeoPoint>, overviewView: RouteOverviewView): SimplificationResult {
-        if (points.size <= 2) return SimplificationResult(points, 0.0)
-        val meanLatitudeRadians = Math.toRadians(points.sumOf(GeoPoint::latitude) / points.size)
-        val projected = points.map { point ->
-            ProjectedPoint(
-                x = EARTH_RADIUS_METERS * Math.toRadians(point.longitude) * cos(meanLatitudeRadians),
-                y = EARTH_RADIUS_METERS * Math.toRadians(point.latitude),
-            )
-        }
-        val spanX = (projected.maxOf(ProjectedPoint::x) - projected.minOf(ProjectedPoint::x)).coerceAtLeast(1e-9)
-        val spanY = (projected.maxOf(ProjectedPoint::y) - projected.minOf(ProjectedPoint::y)).coerceAtLeast(1e-9)
+    private fun simplifyRouteForOverview(
+        points: List<GeoPoint>,
+        overviewView: RouteOverviewView,
+    ): RouteGeometrySimplifier.Result {
         val drawingPadding = 28f * context.resources.displayMetrics.density
-        val availableWidth = (overviewView.width - drawingPadding * 2f).coerceAtLeast(1f)
-        val availableHeight = (overviewView.height - drawingPadding * 2f).coerceAtLeast(1f)
-        val pixelsPerMeter = minOf(availableWidth / spanX, availableHeight / spanY)
-        val toleranceMeters = SIMPLIFICATION_TOLERANCE_PIXELS / pixelsPerMeter
-        val keep = BooleanArray(points.size)
-        keep[0] = true
-        keep[points.lastIndex] = true
-        val ranges = ArrayDeque<Pair<Int, Int>>()
-        ranges.addLast(0 to points.lastIndex)
-
-        while (ranges.isNotEmpty()) {
-            val (start, end) = ranges.removeLast()
-            var farthestIndex = -1
-            var farthestDistance = 0.0
-            for (index in start + 1 until end) {
-                val distance = perpendicularDistance(projected[index], projected[start], projected[end])
-                if (distance > farthestDistance) {
-                    farthestDistance = distance
-                    farthestIndex = index
-                }
-            }
-            if (farthestIndex >= 0 && farthestDistance > toleranceMeters) {
-                keep[farthestIndex] = true
-                ranges.addLast(start to farthestIndex)
-                ranges.addLast(farthestIndex to end)
-            }
-        }
-        return SimplificationResult(points.filterIndexed { index, _ -> keep[index] }, toleranceMeters)
-    }
-
-    private fun perpendicularDistance(point: ProjectedPoint, start: ProjectedPoint, end: ProjectedPoint): Double {
-        val deltaX = end.x - start.x
-        val deltaY = end.y - start.y
-        val lengthSquared = deltaX * deltaX + deltaY * deltaY
-        if (lengthSquared == 0.0) return hypot(point.x - start.x, point.y - start.y)
-        val position = ((point.x - start.x) * deltaX + (point.y - start.y) * deltaY) / lengthSquared
-        val closestX = start.x + position.coerceIn(0.0, 1.0) * deltaX
-        val closestY = start.y + position.coerceIn(0.0, 1.0) * deltaY
-        return hypot(point.x - closestX, point.y - closestY)
+        return RouteGeometrySimplifier.simplifyForViewport(
+            points = points,
+            viewportWidthPixels = overviewView.width.toDouble(),
+            viewportHeightPixels = overviewView.height.toDouble(),
+            paddingPixels = drawingPadding.toDouble(),
+            tolerancePixels = SIMPLIFICATION_TOLERANCE_PIXELS,
+        )
     }
 
     private fun distanceMeters(first: GeoPoint, second: GeoPoint): Double {
@@ -448,7 +409,4 @@ class SettingsDialog(
         const val ROUTE_OVERVIEW_PREFS = "route_overview_settings"
         const val SHOW_ROUTE_OVERVIEW = "show_route_overview"
     }
-
-    private data class ProjectedPoint(val x: Double, val y: Double)
-    private data class SimplificationResult(val points: List<GeoPoint>, val toleranceMeters: Double)
 }
