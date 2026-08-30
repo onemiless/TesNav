@@ -4,24 +4,71 @@ NavAssist v2 是独立于现有 WebSocket v1 的、默认关闭的单向导航�
 
 共享 JSON Schema 位于 [`protocol/navassist-v2.schema.json`](../protocol/navassist-v2.schema.json)。接收端应启用严格 schema 校验并拒绝未知字段。
 
-## 启用方式
+## 启用方式与 App 内配置
 
-在本机 Gradle properties 中同时配置以下两项才会启动 v2：
+不再要求为每台 C3XL 重新编译 URL。打开 TesNav 的“设置”，在 `NavAssist / C3XL` 区域输入与 C3XL 相同的共享 Token 并保存。Token 输入使用密码遮罩；保存后界面只显示“已配置”，不会回显完整内容。它存放在应用私有的 `MODE_PRIVATE` preferences 中，并通过 `android:allowBackup=false` 排除 Android Auto Backup；更改或清除成功后会立即重建 exporter，无需重装或重新编译 APK。若持久化写入失败，App 保留旧 Token 和旧连接 ownership 并显示错误。
+
+Token 的 UTF-8 key material 至少为 16 bytes，且首尾不能有空白字符。推荐使用 32 bytes 随机值，例如 `openssl rand -hex 32` 的完整输出。当前测试 Token 不是硬件保护的秘密；不要记录、截屏或分发，测试完成后应轮换。
+
+默认 Gradle 配置只需要留空 URL：
 
 ```properties
-NAV_ASSIST_V2_URL=http://192.168.53.232:7766
-NAV_ASSIST_V2_TOKEN=replace-with-a-random-shared-secret
+NAV_ASSIST_V2_URL=
 
 # 可选；小于 200 ms 仍会被钳制为 200 ms（最高 5 Hz）
 NAV_ASSIST_V2_INTERVAL_MS=200
 ```
 
-`NAV_ASSIST_V2_URL` 是 C3XL 服务的 base URL。客户端固定 POST 到其根路径 `/v2/snapshot`。URL 为空或不是有效的 HTTP/HTTPS 地址、token 的 UTF-8 key material 少于 16 bytes，或 `validForMs` 不在 100–2000 ms 时，exporter 保持 `STOPPED`，不会创建网络请求。token 只作为 HMAC 密钥，不会出现在请求 body 或 header 中；仓库中没有默认密钥。
+兼容旧测试 APK：`NAV_ASSIST_V2_TOKEN` 若编译时非空，只会在 App 私有配置尚不存在时执行一次迁移；之后始终以 App 内保存值为准。`NAV_ASSIST_V2_URL` 若为空，使用下述认证 UDP 自动发现；若是合法 HTTP/HTTPS URL，仍作为手工 override，客户端固定 POST 到其根路径 `/v2/snapshot` 且不扫描。非空但非法的 URL 不会接管 legacy v1。
 
-当 v2 配置完整且通过上述 gate 时，v2 优先接管手机到 C3XL 的出口，legacy v1 WebSocket 不启动，避免默认旧地址持续重连。配置缺失或不满足 gate 时仍完全沿用原 v1 的 `EXPORT_ENABLED` 行为。
+当 Token 有效，且 URL 为空或为合法 override 时，v2 接管手机到 C3XL 的出口，legacy v1 WebSocket 不启动，避免两条链路并行。Token 缺失/太短、URL 非空但非法或有效期 gate 不满足时，仍完全沿用原 v1 的 `EXPORT_ENABLED` 行为。
 
 HTTP 与 HTTPS 都受支持，封闭场地若使用 HTTP，必须依靠隔离测试网络。更高信任边界应使用 HTTPS。
-当前测试 token 会编译进 APK，不能视为硬件保护的秘密；测试完成后应轮换 token，并且不要分发该 APK。
+
+设置页状态含义：
+
+- `未配置`：没有有效 Token；不会发送发现包。
+- `正在扫描`：本轮 UDP 广播仍在收集响应。
+- `多设备冲突`：同一轮出现多个不同的已认证源 IP；fail closed，不选择最快响应者。
+- `已发现`：offer 已认证且 endpoint 已固定，但尚无成功的导航 HTTP POST。
+- `HTTP 在线`：至少一个 `/v2/snapshot` POST 已成功；只有这个状态代表数据链在线。
+- `错误`：发现或 HTTP 发送失败。自动发现得到的 endpoint 一旦 POST 失败会立即清除，下一轮重新发现。
+
+## C3XL 自动发现
+
+手机对最多 8 个本地、已启用、非 loopback 接口的 IPv4 broadcast 地址（另含 limited broadcast）发送 UDP，目标端口 `7765`，每轮使用新的 `SecureRandom` 16-byte nonce，接收窗口 750 ms，datagram 上限 512 bytes。它不会并发扫描 `/24` 的 HTTP 地址。
+
+为保持发现模块纯 JVM、可注入和最小侵入，当前枚举的是所有 `up && !loopback` 且绑定 RFC1918 IPv4 的接口，不等同于 Android `ConnectivityManager` 所指的单一 active Wi-Fi/Ethernet。封闭场地测试网络应关闭无关 VPN 和其他私网接口；若未来需要在复杂多网络环境使用，应再注入 Android active-network provider 收窄广播目标，而不是自动选择某个响应。
+
+request 是 compact JSON，严格字段集合为：
+
+```json
+{"messageType":"navassist_discovery_request","schemaVersion":2,"nonce":"<32-lowercase-hex>","proof":"<64-lowercase-hex>"}
+```
+
+request proof 的 HMAC 原文精确为：
+
+```text
+navassist_discovery_request\n2\n<nonce>
+```
+
+C3XL offer 的严格字段集合为：
+
+```json
+{"messageType":"navassist_discovery_offer","schemaVersion":2,"nonce":"<same-nonce>","port":7766,"path":"/v2/snapshot","proof":"<64-lowercase-hex>"}
+```
+
+offer proof 的 HMAC 原文精确为：
+
+```text
+navassist_discovery_offer\n2\n<nonce>\n7766\n/v2/snapshot
+```
+
+两种 proof 都是上述固定 UTF-8 字符串的 HMAC-SHA256 lowercase hex，不是对 JSON 序列化文本签名。Android 严格拒绝未知/重复字段、错误 primitive 类型、无效 UTF-8、错误 schema/nonce/path/port/proof、超过 512 bytes 的响应和非 RFC1918 IPv4 来源。endpoint 只使用 UDP packet 的 source IP 构造为 `http://<source-ip>:7766/v2/snapshot`；不信任 payload host、不做 DNS 解析，并禁用 HTTP/HTTPS redirect。
+
+同一轮来自同一个源 IP 的重复合法 offer 会去重；来自多个不同已认证源 IP 的 offer 会整轮拒绝。旧 offer 因 nonce 不匹配不会进入当前轮。request 本身没有 wall-clock 字段，抓到旧 request 的人可能使 C3XL 再发一次 offer，因此不能把 discovery 描述成 request freshness 协议；真正的导航 HTTP payload 仍另有 HMAC、session/sequence、wall-time 和接收端 monotonic TTL。
+
+测试网络限定一台手机使用一个 Token；多个手机共享同一 Token 会形成相互竞争的导航 session，超出 P0 支持范围。
 
 ## 请求与认证
 
@@ -89,9 +136,9 @@ C3XL 的实车控制 gate 只接受 Android/iOS 的 `realtime` 快照；`simulat
 
 ## 与 v1 的隔离
 
-- 原 `EXPORT_ENABLED`、`WEBSOCKET_URL`、`API_TOKEN`、`EXPORT_INTERVAL_MS` 默认值与运行路径不变；仅在 v2 完整配置时抑制 v1 启动。
+- 原 `EXPORT_ENABLED`、`WEBSOCKET_URL`、`API_TOKEN`、`EXPORT_INTERVAL_MS` 默认值与运行路径不变；仅在有效 Token 配合 discovery 或合法显式 URL 时抑制 v1 启动。非法显式 URL 不抢占 v1。
 - 新增的 `NavigationState` v2 字段均为 JVM `transient`，不会进入 legacy Gson v1 payload。
-- v2 使用独立 OkHttp client、coroutine 和连接状态；未配置时不会启动。
+- v2 使用独立 UDP/OkHttp client、coroutine 和连接状态；未配置时不会发 UDP 或 HTTP。
 - v2 没有 route geometry POST，也不接收 C3XL 回包。
 - v2 配置生效后 legacy v1 不启动，因此原 v1 回传的 `is_tesla_nav_active` 也不可用；依赖该回传 gate 的 Tesla/Home Assistant 自动同步不会自动进入 ready。v2 P0 不伪造该入站状态。
 - v2 没有方向盘角度、曲率、加速度、CAN 或其他车辆控制字段。

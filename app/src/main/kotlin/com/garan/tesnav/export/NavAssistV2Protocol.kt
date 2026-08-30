@@ -43,12 +43,22 @@ data class NavAssistV2ExportConfig(
     val validForMs: Long = NavAssistV2Protocol.DEFAULT_VALID_FOR_MS,
 ) {
     fun isConfigured(): Boolean {
-        val parsedUrl = baseUrl.trim().toHttpUrlOrNull()
-        return parsedUrl != null && parsedUrl.scheme in setOf("http", "https") &&
-            token.isNotBlank() &&
+        if (!hasValidTokenAndLifetime()) return false
+        return baseUrl.isBlank() || hasValidExplicitUrl()
+    }
+
+    fun usesDiscovery(): Boolean = isConfigured() && baseUrl.isBlank()
+
+    fun hasValidExplicitUrl(): Boolean {
+        val parsedUrl = baseUrl.trim().toHttpUrlOrNull() ?: return false
+        return parsedUrl.scheme in setOf("http", "https")
+    }
+
+    fun hasValidTokenAndLifetime(): Boolean =
+        token.isNotBlank() &&
+            token == token.trim() &&
             token.toByteArray(StandardCharsets.UTF_8).size >= NavAssistV2Protocol.MIN_TOKEN_UTF8_BYTES &&
             validForMs in NavAssistV2Protocol.MIN_VALID_FOR_MS..NavAssistV2Protocol.MAX_VALID_FOR_MS
-    }
 }
 
 data class NavAssistV2Snapshot(

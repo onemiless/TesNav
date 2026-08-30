@@ -6,16 +6,21 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.text.InputType
+import android.text.method.PasswordTransformationMethod
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import com.amap.api.navi.model.AMapNaviPath
 import com.garan.tesnav.export.ExportConnectionState
+import com.garan.tesnav.export.NavAssistV2ConnectionStatus
 import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.util.RouteGeometrySimplifier
@@ -71,6 +76,47 @@ class SettingsDialog(
         val webSocketErrorText = errorText()
         val homeAssistantErrorText = errorText()
         val navigationErrorText = errorText()
+        val navAssistTitle = bodyText("NavAssist / C3XL").apply {
+            textSize = 18f
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        val navAssistTokenState = bodyText("")
+        val navAssistStatusText = bodyText("状态：未配置")
+        val navAssistEndpointText = bodyText("C3XL：—")
+        val navAssistErrorText = errorText()
+        val navAssistTokenInput = EditText(context).apply {
+            hint = if (service.isNavAssistV2TokenConfigured()) "已配置；输入新 Token 可替换" else "输入与 C3XL 相同的 Token"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            transformationMethod = PasswordTransformationMethod.getInstance()
+            isSingleLine = true
+            isSaveEnabled = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+            }
+        }
+        val saveNavAssistToken = Button(context).apply { text = "保存 Token" }
+        val clearNavAssistToken = Button(context).apply { text = "清除" }
+        val navAssistTokenActions = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(saveNavAssistToken, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(clearNavAssistToken, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        val navAssistBlock = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(250, 252, 253))
+                setStroke(dp(1), Color.rgb(224, 230, 234))
+                cornerRadius = dp(12).toFloat()
+            }
+            addView(navAssistTitle, matchWidthParams())
+            addView(navAssistTokenState, matchWidthParams(dp(8)))
+            addView(navAssistTokenInput, matchWidthParams(dp(6)))
+            addView(navAssistTokenActions, matchWidthParams(dp(6)))
+            addView(navAssistStatusText, matchWidthParams(dp(10)))
+            addView(navAssistEndpointText, matchWidthParams(dp(6)))
+            addView(navAssistErrorText, matchWidthParams(dp(6)))
+        }
         val routeOverviewPreferences = context.getSharedPreferences(ROUTE_OVERVIEW_PREFS, Context.MODE_PRIVATE)
         @Suppress("DEPRECATION")
         val routeOverviewToggle = Switch(context).apply {
@@ -137,6 +183,7 @@ class SettingsDialog(
         val body = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(12), dp(16), dp(20))
+            addView(navAssistBlock, matchWidthParams())
             addView(syncToggle, matchWidthParams())
             addView(webSocketText, matchWidthParams(dp(12)))
             addView(teslaNavigationText, matchWidthParams(dp(6)))
@@ -171,6 +218,26 @@ class SettingsDialog(
             routeOverviewPreferences.edit().putBoolean(SHOW_ROUTE_OVERVIEW, enabled).apply()
             routeOverviewBlock.visibility = if (enabled) View.VISIBLE else View.GONE
         }
+        fun renderTokenConfigured() {
+            val configured = service.isNavAssistV2TokenConfigured()
+            navAssistTokenState.text = if (configured) "Token：已配置（内容不显示）" else "Token：未配置"
+            navAssistTokenInput.hint = if (configured) "已配置；输入新 Token 可替换" else "输入与 C3XL 相同的 Token"
+        }
+        renderTokenConfigured()
+        saveNavAssistToken.setOnClickListener {
+            val error = service.setNavAssistV2Token(navAssistTokenInput.text.toString())
+            if (error == null) {
+                navAssistTokenInput.text.clear()
+                renderTokenConfigured()
+            }
+            renderError(navAssistErrorText, error)
+        }
+        clearNavAssistToken.setOnClickListener {
+            navAssistTokenInput.text.clear()
+            val error = service.clearNavAssistV2Token()
+            if (error == null) renderTokenConfigured()
+            renderError(navAssistErrorText, error)
+        }
         close.setOnClickListener { dialog.dismiss() }
         dialog.setOnDismissListener {
             observationJobs.forEach(Job::cancel)
@@ -194,18 +261,31 @@ class SettingsDialog(
             }
         }
         observationJobs += scope.launch {
-            service.exporter.connectionState.collect { state ->
+            service.commaConnectionState.collect { state ->
                 webSocketText.text = "Comma WebSocket：${state.name}"
                 renderTeslaNavigationState(teslaNavigationText, state)
             }
         }
         observationJobs += scope.launch {
             service.commaStateStore.state.collect {
-                renderTeslaNavigationState(teslaNavigationText, service.exporter.connectionState.value)
+                renderTeslaNavigationState(teslaNavigationText, service.commaConnectionState.value)
             }
         }
         observationJobs += scope.launch {
-            service.exporter.lastError.collect { renderError(webSocketErrorText, it) }
+            service.commaLastError.collect { renderError(webSocketErrorText, it) }
+        }
+        observationJobs += scope.launch {
+            service.navAssistV2Status.collect { status ->
+                navAssistStatusText.text = "状态：${navAssistStatusLabel(status)}"
+            }
+        }
+        observationJobs += scope.launch {
+            service.navAssistV2ResolvedEndpoint.collect { endpoint ->
+                navAssistEndpointText.text = "C3XL：${endpoint ?: "—"}"
+            }
+        }
+        observationJobs += scope.launch {
+            service.navAssistV2LastError.collect { renderError(navAssistErrorText, it) }
         }
         observationJobs += scope.launch {
             service.homeAssistantClient.connectionState.collect {
@@ -250,6 +330,15 @@ class SettingsDialog(
         } else {
             "is_tesla_nav_active：断开"
         }
+    }
+
+    private fun navAssistStatusLabel(status: NavAssistV2ConnectionStatus): String = when (status) {
+        NavAssistV2ConnectionStatus.UNCONFIGURED -> "未配置"
+        NavAssistV2ConnectionStatus.SCANNING -> "正在扫描"
+        NavAssistV2ConnectionStatus.MULTIPLE_DEVICES -> "多设备冲突（已拒绝连接）"
+        NavAssistV2ConnectionStatus.DISCOVERED -> "已发现，等待导航数据"
+        NavAssistV2ConnectionStatus.ONLINE -> "HTTP 在线"
+        NavAssistV2ConnectionStatus.ERROR -> "错误"
     }
 
     private fun renderError(view: TextView, error: String?) {

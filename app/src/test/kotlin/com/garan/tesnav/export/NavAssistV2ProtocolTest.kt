@@ -160,13 +160,16 @@ class NavAssistV2ProtocolTest {
     }
 
     @Test
-    fun `v2 exporter is opt-in only`() {
+    fun `v2 exporter supports discovery and rejects malformed explicit URLs`() {
         val strongToken = "0123456789abcdef"
-        assertFalse(NavAssistV2ExportConfig(baseUrl = "", token = strongToken).isConfigured())
+        assertTrue(NavAssistV2ExportConfig(baseUrl = "", token = strongToken).isConfigured())
+        assertTrue(NavAssistV2ExportConfig(baseUrl = "", token = strongToken).usesDiscovery())
         assertFalse(NavAssistV2ExportConfig(baseUrl = "not-a-url", token = strongToken).isConfigured())
         assertFalse(NavAssistV2ExportConfig(baseUrl = "ftp://c3xl.local", token = strongToken).isConfigured())
+        assertFalse(NavAssistV2ExportConfig(baseUrl = "not-a-url", token = strongToken).usesDiscovery())
         assertFalse(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = "").isConfigured())
         assertFalse(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = "too-short").isConfigured())
+        assertFalse(NavAssistV2ExportConfig(baseUrl = "", token = "$strongToken\n").isConfigured())
         assertFalse(
             NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = strongToken, validForMs = 99L).isConfigured(),
         )
@@ -174,6 +177,7 @@ class NavAssistV2ProtocolTest {
             NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = strongToken, validForMs = 2_001L).isConfigured(),
         )
         assertTrue(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = strongToken).isConfigured())
+        assertFalse(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = strongToken).usesDiscovery())
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -195,6 +199,10 @@ class NavAssistV2ProtocolTest {
             assertEquals(
                 "http://c3xl.local:7766/v2/snapshot",
                 exporter.snapshotEndpoint("http://c3xl.local:7766/ignored-base-path").toString(),
+            )
+            assertEquals(
+                "http://192.168.53.232:7766/v2/snapshot",
+                exporter.discoveryEndpoint("192.168.53.232").toString(),
             )
         } finally {
             exporter.stop()

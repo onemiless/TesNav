@@ -15,6 +15,7 @@
         android:required="true" />
 
     <application
+        android:allowBackup="false"
         android:label="TesNav"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">

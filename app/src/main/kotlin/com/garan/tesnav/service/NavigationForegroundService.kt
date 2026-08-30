@@ -26,6 +26,8 @@ import com.garan.tesnav.export.ExportConfig
 import com.garan.tesnav.export.ExportConnectionState
 import com.garan.tesnav.export.HttpNavAssistV2Exporter
 import com.garan.tesnav.export.NavAssistV2ExportConfig
+import com.garan.tesnav.export.NavAssistV2ConnectionStatus
+import com.garan.tesnav.export.NavAssistV2Protocol
 import com.garan.tesnav.export.WebSocketNavigationDataExporter
 import com.garan.tesnav.homeassistant.HomeAssistantConnectionState
 import com.garan.tesnav.homeassistant.HomeAssistantNavigationClient
@@ -34,6 +36,7 @@ import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.model.NavigationState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,10 +56,25 @@ class NavigationForegroundService : Service() {
         private set
     lateinit var exporter: WebSocketNavigationDataExporter
         private set
-    private lateinit var navAssistV2Exporter: HttpNavAssistV2Exporter
+    lateinit var navAssistV2Exporter: HttpNavAssistV2Exporter
+        private set
     lateinit var homeAssistantClient: HomeAssistantNavigationClient
         private set
     private lateinit var repository: NavigationRepository
+    private val exporterObservationJobs = mutableListOf<Job>()
+    private var legacyExportEnabled = false
+    private var runtimeNavAssistToken = ""
+
+    private val mutableCommaConnectionState = MutableStateFlow(ExportConnectionState.STOPPED)
+    val commaConnectionState: StateFlow<ExportConnectionState> = mutableCommaConnectionState.asStateFlow()
+    private val mutableCommaLastError = MutableStateFlow<String?>(null)
+    val commaLastError: StateFlow<String?> = mutableCommaLastError.asStateFlow()
+    private val mutableNavAssistV2Status = MutableStateFlow(NavAssistV2ConnectionStatus.UNCONFIGURED)
+    val navAssistV2Status: StateFlow<NavAssistV2ConnectionStatus> = mutableNavAssistV2Status.asStateFlow()
+    private val mutableNavAssistV2ResolvedEndpoint = MutableStateFlow<String?>(null)
+    val navAssistV2ResolvedEndpoint: StateFlow<String?> = mutableNavAssistV2ResolvedEndpoint.asStateFlow()
+    private val mutableNavAssistV2LastError = MutableStateFlow<String?>(null)
+    val navAssistV2LastError: StateFlow<String?> = mutableNavAssistV2LastError.asStateFlow()
 
     private val mutableTeslaSyncEnabled = MutableStateFlow(false)
     val teslaSyncEnabled: StateFlow<Boolean> = mutableTeslaSyncEnabled.asStateFlow()
@@ -86,12 +104,7 @@ class NavigationForegroundService : Service() {
         commaStateStore = CommaStateStore()
         homeAssistantClient = HomeAssistantNavigationClient()
         mutableTeslaSyncEnabled.value = preferences().getBoolean(HA_SYNC_ENABLED, false)
-        val navAssistV2Config = NavAssistV2ExportConfig(
-            baseUrl = BuildConfig.NAV_ASSIST_V2_URL,
-            token = BuildConfig.NAV_ASSIST_V2_TOKEN,
-            intervalMs = BuildConfig.NAV_ASSIST_V2_INTERVAL_MS,
-        )
-        val legacyExportEnabled = BuildConfig.EXPORT_ENABLED && !navAssistV2Config.isConfigured()
+        runtimeNavAssistToken = loadOrMigrateNavAssistToken()
         repository = NavigationRepository(applicationContext, stateStore) { path ->
             if (!legacyExportEnabled || !::exporter.isInitialized) return@NavigationRepository
             if (path == null) {
@@ -105,25 +118,8 @@ class NavigationForegroundService : Service() {
             }
         }
         repository.initialize()
-        exporter = WebSocketNavigationDataExporter(
-            config = ExportConfig(
-                // A configured v2 endpoint takes ownership of the phone-to-C3 link,
-                // preventing the legacy default endpoint from reconnecting in parallel.
-                enabled = legacyExportEnabled,
-                webSocketUrl = BuildConfig.WEBSOCKET_URL,
-                apiToken = BuildConfig.API_TOKEN,
-                intervalMs = BuildConfig.EXPORT_INTERVAL_MS,
-            ),
-            stateProvider = { stateStore.state.value },
-            onCommaState = commaStateStore::set,
-        )
-        navAssistV2Exporter = HttpNavAssistV2Exporter(
-            config = navAssistV2Config,
-            stateProvider = { stateStore.state.value },
-        )
+        rebuildDataExporters()
         observeRuntime()
-        exporter.start()
-        navAssistV2Exporter.start()
         if (mutableTeslaSyncEnabled.value) startHomeAssistant()
     }
 
@@ -147,6 +143,33 @@ class NavigationForegroundService : Service() {
     fun stopNavigation() = repository.stopNavigation()
     fun currentPath(): AMapNaviPath? = repository.currentPath()
 
+    fun isNavAssistV2TokenConfigured(): Boolean =
+        NavAssistV2ExportConfig(baseUrl = "", token = runtimeNavAssistToken).hasValidTokenAndLifetime()
+
+    /** Saves the secret without ever returning or displaying its previous value. */
+    fun setNavAssistV2Token(token: String): String? {
+        if (token != token.trim()) return "Token 首尾不能包含空白字符"
+        val size = token.toByteArray(Charsets.UTF_8).size
+        if (size < NavAssistV2Protocol.MIN_TOKEN_UTF8_BYTES) {
+            return "Token 至少需要 ${NavAssistV2Protocol.MIN_TOKEN_UTF8_BYTES} 个 UTF-8 字节"
+        }
+        if (!navAssistPreferences().edit().putString(NAV_ASSIST_TOKEN, token).commit()) {
+            return "Token 保存失败，当前配置未更改"
+        }
+        runtimeNavAssistToken = token
+        rebuildDataExporters()
+        return null
+    }
+
+    fun clearNavAssistV2Token(): String? {
+        if (!navAssistPreferences().edit().putString(NAV_ASSIST_TOKEN, "").commit()) {
+            return "Token 清除失败，当前配置未更改"
+        }
+        runtimeNavAssistToken = ""
+        rebuildDataExporters()
+        return null
+    }
+
     fun setTeslaSyncEnabled(enabled: Boolean) {
         if (mutableTeslaSyncEnabled.value == enabled) return
         mutableTeslaSyncEnabled.value = enabled
@@ -156,6 +179,8 @@ class NavigationForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        exporterObservationJobs.forEach(Job::cancel)
+        exporterObservationJobs.clear()
         if (::homeAssistantClient.isInitialized) homeAssistantClient.release()
         if (::navAssistV2Exporter.isInitialized) navAssistV2Exporter.stop()
         if (::exporter.isInitialized) exporter.stop()
@@ -163,6 +188,64 @@ class NavigationForegroundService : Service() {
         releaseWakeLock()
         scope.cancel()
         super.onDestroy()
+    }
+
+    /** Rebuilds both exporters so a token change takes effect without reinstalling or restarting the app. */
+    private fun rebuildDataExporters() {
+        exporterObservationJobs.forEach(Job::cancel)
+        exporterObservationJobs.clear()
+        if (::navAssistV2Exporter.isInitialized) navAssistV2Exporter.stop()
+        if (::exporter.isInitialized) exporter.stop()
+
+        val navAssistV2Config = NavAssistV2ExportConfig(
+            baseUrl = BuildConfig.NAV_ASSIST_V2_URL,
+            token = runtimeNavAssistToken,
+            intervalMs = BuildConfig.NAV_ASSIST_V2_INTERVAL_MS,
+        )
+        legacyExportEnabled = BuildConfig.EXPORT_ENABLED && !navAssistV2Config.isConfigured()
+        exporter = WebSocketNavigationDataExporter(
+            config = ExportConfig(
+                // Discovery or a valid explicit v2 endpoint owns the phone-to-C3 link.
+                enabled = legacyExportEnabled,
+                webSocketUrl = BuildConfig.WEBSOCKET_URL,
+                apiToken = BuildConfig.API_TOKEN,
+                intervalMs = BuildConfig.EXPORT_INTERVAL_MS,
+            ),
+            stateProvider = { stateStore.state.value },
+            onCommaState = commaStateStore::set,
+        )
+        navAssistV2Exporter = HttpNavAssistV2Exporter(
+            config = navAssistV2Config,
+            stateProvider = { stateStore.state.value },
+        )
+        observeExporterInstances()
+        exporter.start()
+        navAssistV2Exporter.start()
+    }
+
+    private fun observeExporterInstances() {
+        val observedLegacyExporter = exporter
+        val observedNavAssistExporter = navAssistV2Exporter
+        mutableCommaConnectionState.value = observedLegacyExporter.connectionState.value
+        mutableCommaLastError.value = observedLegacyExporter.lastError.value
+        mutableNavAssistV2Status.value = observedNavAssistExporter.status.value
+        mutableNavAssistV2ResolvedEndpoint.value = observedNavAssistExporter.resolvedEndpoint.value
+        mutableNavAssistV2LastError.value = observedNavAssistExporter.lastError.value
+        exporterObservationJobs += scope.launch {
+            observedLegacyExporter.connectionState.collect { mutableCommaConnectionState.value = it }
+        }
+        exporterObservationJobs += scope.launch {
+            observedLegacyExporter.lastError.collect { mutableCommaLastError.value = it }
+        }
+        exporterObservationJobs += scope.launch {
+            observedNavAssistExporter.status.collect { mutableNavAssistV2Status.value = it }
+        }
+        exporterObservationJobs += scope.launch {
+            observedNavAssistExporter.resolvedEndpoint.collect { mutableNavAssistV2ResolvedEndpoint.value = it }
+        }
+        exporterObservationJobs += scope.launch {
+            observedNavAssistExporter.lastError.collect { mutableNavAssistV2LastError.value = it }
+        }
     }
 
     private fun observeRuntime() {
@@ -174,7 +257,7 @@ class NavigationForegroundService : Service() {
             }
         }
         scope.launch {
-            exporter.connectionState.collect { state ->
+            commaConnectionState.collect { state ->
                 if (state != ExportConnectionState.CONNECTED) {
                     commaStateReady = false
                     lastTeslaNavActive = null
@@ -184,7 +267,7 @@ class NavigationForegroundService : Service() {
         }
         scope.launch {
             commaStateStore.state.collect { state ->
-                if (state.timestampMs == 0L || exporter.connectionState.value != ExportConnectionState.CONNECTED) return@collect
+                if (state.timestampMs == 0L || commaConnectionState.value != ExportConnectionState.CONNECTED) return@collect
                 commaStateReady = true
                 handleTeslaNavigationActive(state.isTeslaNavActive)
             }
@@ -199,6 +282,9 @@ class NavigationForegroundService : Service() {
                 tryStartTeslaNavigation()
                 updateNotification()
             }
+        }
+        scope.launch {
+            navAssistV2Status.collect { updateNotification() }
         }
     }
 
@@ -227,7 +313,7 @@ class NavigationForegroundService : Service() {
 
     private fun tryStartTeslaNavigation() {
         if (!mutableTeslaSyncEnabled.value || !commaStateReady) return
-        if (exporter.connectionState.value != ExportConnectionState.CONNECTED) return
+        if (commaConnectionState.value != ExportConnectionState.CONNECTED) return
         if (lastTeslaNavActive != true) return
         if (homeAssistantClient.connectionState.value != HomeAssistantConnectionState.CONNECTED) return
 
@@ -283,9 +369,21 @@ class NavigationForegroundService : Service() {
 
     private fun preferences() = getSharedPreferences(HA_PREFS, MODE_PRIVATE)
 
+    private fun navAssistPreferences() = getSharedPreferences(NAV_ASSIST_PREFS, MODE_PRIVATE)
+
+    private fun loadOrMigrateNavAssistToken(): String {
+        val preferences = navAssistPreferences()
+        if (preferences.contains(NAV_ASSIST_TOKEN)) return preferences.getString(NAV_ASSIST_TOKEN, "").orEmpty()
+        // BuildConfig is a one-time migration fallback for older configured test APKs.
+        val fallback = BuildConfig.NAV_ASSIST_V2_TOKEN
+        preferences.edit().putString(NAV_ASSIST_TOKEN, fallback).commit()
+        return fallback
+    }
+
     private fun updateNotification() {
         if (!::stateStore.isInitialized || !::exporter.isInitialized) return
-        val content = "${stateStore.state.value.navigationMode.name} · Comma ${exporter.connectionState.value.name}"
+        val content = "${stateStore.state.value.navigationMode.name} · Comma ${commaConnectionState.value.name} · " +
+            "C3XL ${navAssistV2Status.value.name}"
         getSystemService(NotificationManager::class.java)?.notify(
             NOTIFICATION_ID,
             buildNotification(content),
@@ -361,6 +459,8 @@ class NavigationForegroundService : Service() {
         private const val NOTIFICATION_ID = 1001
         const val HA_PREFS = "home_assistant_sync"
         const val HA_SYNC_ENABLED = "enabled"
+        private const val NAV_ASSIST_PREFS = "navassist_v2"
+        private const val NAV_ASSIST_TOKEN = "hmac_token"
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(
