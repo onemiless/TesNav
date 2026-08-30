@@ -10,14 +10,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HttpNavAssistV2ExporterTest {
-    private val token = "0123456789abcdef0123456789abcdef"
+    private val identity = AndroidKeystoreNavAssistIdentity.generatedForTest()
+    private val deviceId = "d".repeat(32)
 
     @Test
     fun `discovered endpoint becomes online only after a successful POST`() {
         val postEntered = CountDownLatch(1)
         val allowPost = CountDownLatch(1)
         val client = object : NavAssistV2HttpClient {
-            override fun post(endpoint: HttpUrl, body: String, signature: String) {
+            override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) {
+                assertEquals(identity.keyId, appKeyId)
                 postEntered.countDown()
                 assertTrue(allowPost.await(2, TimeUnit.SECONDS))
             }
@@ -25,7 +27,7 @@ class HttpNavAssistV2ExporterTest {
             override fun close() = Unit
         }
         val exporter = exporter(
-            discovery = NavAssistV2EndpointDiscovery { NavAssistV2DiscoveryResult.Found("192.168.53.232") },
+            discovery = NavAssistV2EndpointDiscovery { NavAssistV2DiscoveryResult.Found("192.168.53.232", deviceId) },
             client = client,
         )
 
@@ -51,10 +53,10 @@ class HttpNavAssistV2ExporterTest {
         val exporter = exporter(
             discovery = NavAssistV2EndpointDiscovery {
                 discoveries.incrementAndGet()
-                NavAssistV2DiscoveryResult.Found("192.168.53.232")
+                NavAssistV2DiscoveryResult.Found("192.168.53.232", deviceId)
             },
             client = object : NavAssistV2HttpClient {
-                override fun post(endpoint: HttpUrl, body: String, signature: String) {
+                override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) {
                     if (posts.incrementAndGet() == 1) error("first POST fails")
                     online.countDown()
                 }
@@ -69,7 +71,7 @@ class HttpNavAssistV2ExporterTest {
             await { exporter.status.value == NavAssistV2ConnectionStatus.ONLINE }
             assertTrue(discoveries.get() >= 2)
             assertTrue(posts.get() >= 2)
-            assertEquals("http://192.168.53.232:7766/v2/snapshot", exporter.resolvedEndpoint.value)
+            assertEquals("http://192.168.53.232:7766/v3/snapshot", exporter.resolvedEndpoint.value)
         } finally {
             exporter.stop()
         }
@@ -84,7 +86,7 @@ class HttpNavAssistV2ExporterTest {
                 NavAssistV2DiscoveryResult.MultipleAuthenticatedHosts
             },
             client = object : NavAssistV2HttpClient {
-                override fun post(endpoint: HttpUrl, body: String, signature: String) = error("must not POST")
+                override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) = error("must not POST")
                 override fun close() = Unit
             },
         )
@@ -101,7 +103,7 @@ class HttpNavAssistV2ExporterTest {
     }
 
     @Test
-    fun `stopping during discovery prevents an old-token tail POST`() {
+    fun `stopping during discovery prevents a stale pairing tail POST`() {
         val discoveryEntered = CountDownLatch(1)
         val releaseDiscovery = CountDownLatch(1)
         val postCalled = CountDownLatch(1)
@@ -109,10 +111,10 @@ class HttpNavAssistV2ExporterTest {
             discovery = NavAssistV2EndpointDiscovery {
                 discoveryEntered.countDown()
                 assertTrue(releaseDiscovery.await(2, TimeUnit.SECONDS))
-                NavAssistV2DiscoveryResult.Found("192.168.53.232")
+                NavAssistV2DiscoveryResult.Found("192.168.53.232", deviceId)
             },
             client = object : NavAssistV2HttpClient {
-                override fun post(endpoint: HttpUrl, body: String, signature: String) {
+                override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) {
                     postCalled.countDown()
                 }
 
@@ -132,9 +134,11 @@ class HttpNavAssistV2ExporterTest {
         discovery: NavAssistV2EndpointDiscovery,
         client: NavAssistV2HttpClient,
     ) = HttpNavAssistV2Exporter(
-        config = NavAssistV2ExportConfig(baseUrl = "", token = token),
+        config = NavAssistV2ExportConfig(baseUrl = ""),
         stateProvider = { NavigationState() },
+        identity = identity,
         endpointDiscovery = discovery,
+        pinnedDeviceProvider = { null },
         httpClient = client,
         discoveryRetryMs = 1L,
     )

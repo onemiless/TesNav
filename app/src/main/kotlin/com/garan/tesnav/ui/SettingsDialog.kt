@@ -6,14 +6,10 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
-import android.os.Build
-import android.text.InputType
-import android.text.method.PasswordTransformationMethod
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
@@ -80,27 +76,11 @@ class SettingsDialog(
             textSize = 18f
             setTypeface(typeface, Typeface.BOLD)
         }
-        val navAssistTokenState = bodyText("")
+        val navAssistPairingState = bodyText("")
         val navAssistStatusText = bodyText("状态：未配置")
         val navAssistEndpointText = bodyText("C3XL：—")
         val navAssistErrorText = errorText()
-        val navAssistTokenInput = EditText(context).apply {
-            hint = if (service.isNavAssistV2TokenConfigured()) "已配置；输入新 Token 可替换" else "输入与 C3XL 相同的 Token"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            transformationMethod = PasswordTransformationMethod.getInstance()
-            isSingleLine = true
-            isSaveEnabled = false
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
-            }
-        }
-        val saveNavAssistToken = Button(context).apply { text = "保存 Token" }
-        val clearNavAssistToken = Button(context).apply { text = "清除" }
-        val navAssistTokenActions = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(saveNavAssistToken, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(clearNavAssistToken, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
+        val clearNavAssistPairing = Button(context).apply { text = "忘记已配对设备" }
         val navAssistBlock = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(14), dp(14), dp(14))
@@ -110,9 +90,8 @@ class SettingsDialog(
                 cornerRadius = dp(12).toFloat()
             }
             addView(navAssistTitle, matchWidthParams())
-            addView(navAssistTokenState, matchWidthParams(dp(8)))
-            addView(navAssistTokenInput, matchWidthParams(dp(6)))
-            addView(navAssistTokenActions, matchWidthParams(dp(6)))
+            addView(navAssistPairingState, matchWidthParams(dp(8)))
+            addView(clearNavAssistPairing, matchWidthParams(dp(6)))
             addView(navAssistStatusText, matchWidthParams(dp(10)))
             addView(navAssistEndpointText, matchWidthParams(dp(6)))
             addView(navAssistErrorText, matchWidthParams(dp(6)))
@@ -218,24 +197,19 @@ class SettingsDialog(
             routeOverviewPreferences.edit().putBoolean(SHOW_ROUTE_OVERVIEW, enabled).apply()
             routeOverviewBlock.visibility = if (enabled) View.VISIBLE else View.GONE
         }
-        fun renderTokenConfigured() {
-            val configured = service.isNavAssistV2TokenConfigured()
-            navAssistTokenState.text = if (configured) "Token：已配置（内容不显示）" else "Token：未配置"
-            navAssistTokenInput.hint = if (configured) "已配置；输入新 Token 可替换" else "输入与 C3XL 相同的 Token"
-        }
-        renderTokenConfigured()
-        saveNavAssistToken.setOnClickListener {
-            val error = service.setNavAssistV2Token(navAssistTokenInput.text.toString())
-            if (error == null) {
-                navAssistTokenInput.text.clear()
-                renderTokenConfigured()
+        fun renderPairing() {
+            val deviceId = service.navAssistPairedDeviceId()
+            navAssistPairingState.text = if (deviceId == null) {
+                "自动配对：打开 App 后自动发现；首次配对要求 C3XL 处于 offroad"
+            } else {
+                "自动配对：设备 ${deviceId.take(8)}…（无需 Token）"
             }
-            renderError(navAssistErrorText, error)
+            clearNavAssistPairing.isEnabled = deviceId != null
         }
-        clearNavAssistToken.setOnClickListener {
-            navAssistTokenInput.text.clear()
-            val error = service.clearNavAssistV2Token()
-            if (error == null) renderTokenConfigured()
+        renderPairing()
+        clearNavAssistPairing.setOnClickListener {
+            val error = service.clearNavAssistPairing()
+            if (error == null) renderPairing()
             renderError(navAssistErrorText, error)
         }
         close.setOnClickListener { dialog.dismiss() }
@@ -277,6 +251,7 @@ class SettingsDialog(
         observationJobs += scope.launch {
             service.navAssistV2Status.collect { status ->
                 navAssistStatusText.text = "状态：${navAssistStatusLabel(status)}"
+                renderPairing()
             }
         }
         observationJobs += scope.launch {

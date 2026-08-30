@@ -15,8 +15,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import com.amap.api.maps.CameraUpdateFactory
 import com.amap.api.navi.AMapNaviView
@@ -25,6 +27,7 @@ import com.amap.api.navi.enums.AMapNaviViewShowMode
 import com.amap.api.navi.view.OverviewButtonView
 import com.garan.tesnav.model.NavigationMode
 import com.garan.tesnav.model.NavigationState
+import com.garan.tesnav.model.RouteChoice
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.ui.NavigationStateDialog
 import com.garan.tesnav.ui.SettingsDialog
@@ -34,11 +37,15 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlin.math.ceil
 
 /** Dedicated AMap navigation page, matching AMap's official Activity separation. */
 class NavigationActivity : Activity() {
     private lateinit var naviView: AMapNaviView
     private lateinit var routeActions: LinearLayout
+    private lateinit var routeChoiceScroll: HorizontalScrollView
+    private lateinit var routeChoiceRow: LinearLayout
+    private lateinit var navigationButtons: LinearLayout
     private lateinit var endNavigationButton: Button
     private lateinit var realtimeButton: Button
     private lateinit var simulationButton: Button
@@ -53,6 +60,7 @@ class NavigationActivity : Activity() {
     private var currentState = NavigationState()
     private var previousMode: NavigationMode? = null
     private var routeRequestSent = false
+    private var renderedRouteChoices: List<RouteChoice> = emptyList()
 
     private val runtimeConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -96,20 +104,38 @@ class NavigationActivity : Activity() {
         setZoom(15)
         setPointToCenter(0.4, 0.5)
         setAutoLockCar(false)
+        setAutoDrawRoute(true)
+        setDrawBackUpOverlay(true)
     }
 
     private fun createControls() {
         endNavigationButton = actionButton("结束导航")
         realtimeButton = actionButton("开始导航")
         simulationButton = actionButton("模拟导航")
-        routeActions = LinearLayout(this).apply {
+        routeChoiceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            visibility = View.GONE
+        }
+        routeChoiceScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(routeChoiceRow, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        navigationButtons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
             addView(endNavigationButton, LinearLayout.LayoutParams(dp(180), ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(realtimeButton, LinearLayout.LayoutParams(dp(180), ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(simulationButton, LinearLayout.LayoutParams(dp(180), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = dp(12)
+            })
+        }
+        routeActions = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            addView(routeChoiceScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(navigationButtons, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(8)
             })
         }
         settingsButton = floatingIconButton(R.drawable.ic_settings, "打开设置")
@@ -123,8 +149,10 @@ class NavigationActivity : Activity() {
 
     private fun createRootView(): FrameLayout = FrameLayout(this).apply {
         addView(naviView, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-        addView(routeActions, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        addView(routeActions, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            marginStart = dp(12)
+            marginEnd = dp(12)
             bottomMargin = dp(32)
         })
         addView(overviewButton, leftButtonParams(stackLevel = 1))
@@ -212,6 +240,7 @@ class NavigationActivity : Activity() {
         when (state.navigationMode) {
             NavigationMode.IDLE -> {
                 routeActions.visibility = View.GONE
+                routeChoiceScroll.visibility = View.GONE
                 if (oldMode != null && oldMode != NavigationMode.IDLE) finish()
                 if (routeRequestSent && !state.errorMessage.isNullOrBlank()) {
                     toast(state.errorMessage)
@@ -220,6 +249,8 @@ class NavigationActivity : Activity() {
             }
             NavigationMode.ROUTE_PLANNED -> {
                 routeActions.visibility = View.VISIBLE
+                renderRouteChoices(state.routeChoices)
+                routeChoiceScroll.visibility = if (state.routeChoices.isEmpty()) View.GONE else View.VISIBLE
                 endNavigationButton.visibility = View.GONE
                 realtimeButton.visibility = View.VISIBLE
                 simulationButton.apply {
@@ -232,6 +263,7 @@ class NavigationActivity : Activity() {
             }
             NavigationMode.REALTIME -> {
                 routeActions.visibility = View.VISIBLE
+                routeChoiceScroll.visibility = View.GONE
                 endNavigationButton.visibility = View.VISIBLE
                 realtimeButton.visibility = View.GONE
                 simulationButton.visibility = View.GONE
@@ -239,6 +271,7 @@ class NavigationActivity : Activity() {
             }
             NavigationMode.SIMULATION -> {
                 routeActions.visibility = View.VISIBLE
+                routeChoiceScroll.visibility = View.GONE
                 endNavigationButton.visibility = View.VISIBLE
                 realtimeButton.visibility = View.GONE
                 simulationButton.apply {
@@ -250,6 +283,45 @@ class NavigationActivity : Activity() {
             NavigationMode.ARRIVED -> routeActions.visibility = View.GONE
         }
         previousMode = state.navigationMode
+    }
+
+    private fun renderRouteChoices(choices: List<RouteChoice>) {
+        val visibleChoices = choices.take(MAX_ROUTE_CHOICES)
+        if (visibleChoices == renderedRouteChoices) return
+        renderedRouteChoices = visibleChoices
+        routeChoiceRow.removeAllViews()
+        visibleChoices.forEachIndexed { index, choice ->
+            routeChoiceRow.addView(
+                routeChoiceCard(choice, index),
+                LinearLayout.LayoutParams(dp(210), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    if (index > 0) marginStart = dp(8)
+                },
+            )
+        }
+    }
+
+    private fun routeChoiceCard(choice: RouteChoice, index: Int): TextView = TextView(this).apply {
+        val minutes = ceil(choice.durationSeconds / 60.0).toInt().coerceAtLeast(1)
+        val distance = String.format(java.util.Locale.CHINA, "%.1f", choice.distanceMeters / 1000.0)
+        val title = choice.label.ifBlank { "路线 ${index + 1}" }
+        val toll = if (choice.tollYuan > 0) " · 收费 ¥${choice.tollYuan}" else ""
+        text = "$title${if (choice.selected) " · 已选" else ""}\n" +
+            "${minutes}分钟 · ${distance}公里$toll · ${choice.trafficLightCount}个红绿灯"
+        textSize = 13f
+        setTextColor(if (choice.selected) Color.WHITE else Color.rgb(38, 50, 56))
+        setPadding(dp(12), dp(9), dp(12), dp(9))
+        background = GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(if (choice.selected) BRAND_BLUE else Color.argb(238, 255, 255, 255))
+            setStroke(dp(1), if (choice.selected) BRAND_BLUE else Color.rgb(176, 190, 197))
+        }
+        setOnClickListener {
+            if (runtimeService?.selectRoute(choice.routeId) == true) {
+                naviView.setShowMode(AMapNaviViewShowMode.SHOW_MODE_DISPLAY_OVERVIEW)
+            } else {
+                toast("路线切换失败")
+            }
+        }
     }
 
     private fun enterNavigationView() {
@@ -345,6 +417,7 @@ class NavigationActivity : Activity() {
     companion object {
         const val EXTRA_DESTINATION_LATITUDE = "destination_latitude"
         const val EXTRA_DESTINATION_LONGITUDE = "destination_longitude"
+        private const val MAX_ROUTE_CHOICES = 3
         private val BRAND_BLUE = Color.rgb(0, 120, 255)
     }
 }

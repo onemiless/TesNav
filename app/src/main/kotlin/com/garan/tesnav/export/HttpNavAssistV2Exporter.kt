@@ -29,7 +29,7 @@ enum class NavAssistV2ConnectionStatus {
 }
 
 interface NavAssistV2HttpClient {
-    fun post(endpoint: HttpUrl, body: String, signature: String)
+    fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String)
     fun close()
 }
 
@@ -43,10 +43,11 @@ internal class OkHttpNavAssistV2Client : NavAssistV2HttpClient {
         .followSslRedirects(false)
         .build()
 
-    override fun post(endpoint: HttpUrl, body: String, signature: String) {
+    override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) {
         val request = Request.Builder()
             .url(endpoint)
-            .header(NavAssistV2Protocol.SIGNATURE_HEADER, signature)
+            .header(NavAssistV3Auth.KEY_ID_HEADER, appKeyId)
+            .header(NavAssistV3Auth.SIGNATURE_HEADER, signature)
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
         client.newCall(request).execute().use { response ->
@@ -70,10 +71,12 @@ internal class OkHttpNavAssistV2Client : NavAssistV2HttpClient {
  * base URL selects authenticated UDP discovery; a valid explicit URL remains
  * available as a test override.
  */
-class HttpNavAssistV2Exporter(
+internal class HttpNavAssistV2Exporter(
     private val config: NavAssistV2ExportConfig,
     private val stateProvider: () -> NavigationState?,
-    private val endpointDiscovery: NavAssistV2EndpointDiscovery = UdpNavAssistV2EndpointDiscovery(),
+    private val identity: NavAssistSigningIdentity,
+    private val endpointDiscovery: NavAssistV2EndpointDiscovery,
+    private val pinnedDeviceProvider: () -> PinnedNavAssistDevice?,
     private val httpClient: NavAssistV2HttpClient = OkHttpNavAssistV2Client(),
     private val discoveryRetryMs: Long = DEFAULT_DISCOVERY_RETRY_MS,
 ) : NavigationDataExporter {
@@ -96,7 +99,7 @@ class HttpNavAssistV2Exporter(
         if (running) return
         if (!config.isConfigured()) {
             mutableResolvedEndpoint.value = null
-            if (config.hasValidTokenAndLifetime() && config.baseUrl.isNotBlank()) {
+            if (config.hasValidLifetime() && config.baseUrl.isNotBlank()) {
                 mutableLastError.value = "NavAssist v2 URL 必须是有效的 http/https URL"
                 mutableConnectionState.value = ExportConnectionState.ERROR
                 mutableStatus.value = NavAssistV2ConnectionStatus.ERROR
@@ -108,7 +111,10 @@ class HttpNavAssistV2Exporter(
             return
         }
 
-        val explicitEndpoint = if (config.usesDiscovery()) null else snapshotEndpoint(config.baseUrl)
+        val explicitEndpoint = if (config.usesDiscovery()) null else {
+            val pinned = pinnedDeviceProvider()
+            snapshotEndpoint(config.baseUrl)?.let { url -> pinned?.let { ResolvedNavAssistEndpoint(url, it.deviceId) } }
+        }
         if (!config.usesDiscovery() && explicitEndpoint == null) {
             mutableLastError.value = "NavAssist v2 URL 必须是有效的 http/https URL"
             mutableConnectionState.value = ExportConnectionState.ERROR
@@ -161,18 +167,20 @@ class HttpNavAssistV2Exporter(
         scope.cancel()
         mutableResolvedEndpoint.value = null
         mutableConnectionState.value = ExportConnectionState.STOPPED
-        mutableStatus.value = if (config.hasValidTokenAndLifetime()) {
+        mutableStatus.value = if (config.hasValidLifetime()) {
             NavAssistV2ConnectionStatus.ERROR
         } else {
             NavAssistV2ConnectionStatus.UNCONFIGURED
         }
     }
 
-    private fun discoverEndpoint(): HttpUrl? {
+    private fun discoverEndpoint(): ResolvedNavAssistEndpoint? {
         mutableConnectionState.value = ExportConnectionState.STARTING
         mutableStatus.value = NavAssistV2ConnectionStatus.SCANNING
-        return when (val result = endpointDiscovery.discover(config.token)) {
-            is NavAssistV2DiscoveryResult.Found -> discoveryEndpoint(result.sourceHost)?.also(::publishDiscovered)
+        return when (val result = endpointDiscovery.discover()) {
+            is NavAssistV2DiscoveryResult.Found -> discoveryEndpoint(result.sourceHost)
+                ?.let { ResolvedNavAssistEndpoint(it, result.deviceId) }
+                ?.also(::publishDiscovered)
                 ?: failDiscovery("C3XL 返回了无效地址")
             NavAssistV2DiscoveryResult.NotFound -> null
             NavAssistV2DiscoveryResult.MultipleAuthenticatedHosts -> {
@@ -185,27 +193,32 @@ class HttpNavAssistV2Exporter(
         }
     }
 
-    private fun failDiscovery(reason: String): HttpUrl? {
+    private fun failDiscovery(reason: String): ResolvedNavAssistEndpoint? {
         mutableLastError.value = reason
         mutableConnectionState.value = ExportConnectionState.ERROR
         mutableStatus.value = NavAssistV2ConnectionStatus.ERROR
         return null
     }
 
-    private fun publishDiscovered(endpoint: HttpUrl) {
+    private fun publishDiscovered(endpoint: ResolvedNavAssistEndpoint) {
         mutableLastError.value = null
-        mutableResolvedEndpoint.value = endpoint.toString()
+        mutableResolvedEndpoint.value = endpoint.url.toString()
         mutableConnectionState.value = ExportConnectionState.STARTING
         mutableStatus.value = NavAssistV2ConnectionStatus.DISCOVERED
     }
 
-    private fun postLatest(endpoint: HttpUrl): PostResult {
+    private fun postLatest(endpoint: ResolvedNavAssistEndpoint): PostResult {
         val state = stateProvider() ?: return PostResult.NO_STATE
         return runCatching {
             val snapshot = session.nextSnapshot(state, System.currentTimeMillis())
             val body = CanonicalJson.encode(snapshot)
-            val signature = HmacSha256.signLowerHex(body, config.token)
-            httpClient.post(endpoint, body, signature)
+            val bodyBytes = body.toByteArray(Charsets.UTF_8)
+            val signature = identity.sign(
+                NavAssistV3Auth.snapshotSignatureMaterial(
+                    endpoint.deviceId, identity.keyId, NavAssistV2Protocol.ENDPOINT_PATH, bodyBytes,
+                ),
+            )
+            httpClient.post(endpoint.url, body, identity.keyId, signature)
         }.fold(
             onSuccess = { PostResult.SUCCESS },
             onFailure = { error ->
@@ -239,3 +252,8 @@ class HttpNavAssistV2Exporter(
         const val DEFAULT_DISCOVERY_RETRY_MS = 1_000L
     }
 }
+
+internal data class ResolvedNavAssistEndpoint(
+    val url: HttpUrl,
+    val deviceId: String,
+)

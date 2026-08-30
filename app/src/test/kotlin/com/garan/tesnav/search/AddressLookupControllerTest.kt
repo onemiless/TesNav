@@ -14,7 +14,7 @@ class AddressLookupControllerTest {
         controller.searchDestination("北京南站")
         controller.searchDestination("  ")
         gateway.destinationRequests.single().complete(
-            LookupResult.Success(listOf(AddressCandidate(39.865, 116.379, "北京南站"))),
+            LookupResult.Success(listOf(suggestion("北京南站", 39.865, 116.379))),
         )
 
         assertTrue(view.destinations.isEmpty())
@@ -31,7 +31,7 @@ class AddressLookupControllerTest {
         controller.updateLocation(AddressPoint(31.2304, 121.4737))
         controller.close()
         gateway.destinationRequests.single().complete(
-            LookupResult.Success(listOf(AddressCandidate(31.154, 121.429, "上海南站"))),
+            LookupResult.Success(listOf(suggestion("上海南站", 31.154, 121.429))),
         )
         gateway.reverseRequests.single().complete(LookupResult.Success("上海市黄浦区"))
 
@@ -114,7 +114,7 @@ class AddressLookupControllerTest {
     }
 
     @Test
-    fun `latest destination address result selects a valid destination`() {
+    fun `latest destination search returns choices without auto selecting one`() {
         val gateway = FakeAddressLookupGateway()
         val view = RecordingAddressLookupView()
         val controller = AddressLookupController(gateway, view, elapsedRealtimeMs = { 1_000L })
@@ -123,28 +123,80 @@ class AddressLookupControllerTest {
         controller.searchDestination("北京西站")
 
         gateway.destinationRequests[0].complete(
-            LookupResult.Success(listOf(AddressCandidate(39.865, 116.379, "北京南站"))),
+            LookupResult.Success(listOf(suggestion("北京南站", 39.865, 116.379))),
         )
         assertTrue(view.destinations.isEmpty())
 
         gateway.destinationRequests[1].complete(
-            LookupResult.Success(listOf(AddressCandidate(39.895, 116.322, "北京西站"))),
+            LookupResult.Success(listOf(
+                suggestion("北京西站", 39.895, 116.322),
+                suggestion("北京西站北广场", 39.896, 116.323),
+            )),
         )
 
         assertEquals(listOf("北京南站", "北京西站"), gateway.destinationRequests.map { it.query })
-        assertEquals(AddressCandidate(39.895, 116.322, "北京西站"), view.destinations.single())
+        assertEquals(listOf("北京西站", "北京西站北广场"), view.suggestionBatches.last().map { it.name })
+        assertTrue(view.destinations.isEmpty())
+    }
+
+    @Test
+    fun `selecting one suggestion resolves only that destination`() {
+        val gateway = FakeAddressLookupGateway()
+        val view = RecordingAddressLookupView()
+        val controller = AddressLookupController(gateway, view, elapsedRealtimeMs = { 1_000L })
+        val selected = suggestion("上海虹桥站", 31.197, 121.327)
+
+        controller.selectSuggestion(selected)
+        gateway.resolveRequests.single().complete(
+            LookupResult.Success(AddressCandidate(31.197, 121.327, "上海市闵行区上海虹桥站", "上海虹桥站", "poi-1")),
+        )
+
+        assertEquals("上海虹桥站", gateway.resolveRequests.single().suggestion.name)
+        assertEquals("上海虹桥站", view.destinations.single().name)
+    }
+
+    @Test
+    fun `new suggestion query invalidates an older callback`() {
+        val gateway = FakeAddressLookupGateway()
+        val view = RecordingAddressLookupView()
+        val controller = AddressLookupController(gateway, view, elapsedRealtimeMs = { 1_000L })
+
+        controller.suggestDestinations("虹桥", null)
+        controller.suggestDestinations("虹桥站", null)
+        gateway.suggestionRequests[0].complete(LookupResult.Success(listOf(suggestion("旧结果", 1.0, 1.0))))
+        gateway.suggestionRequests[1].complete(LookupResult.Success(listOf(suggestion("上海虹桥站", 31.197, 121.327))))
+
+        assertEquals(listOf("上海虹桥站"), view.suggestionBatches.last().map { it.name })
     }
 
     private class FakeAddressLookupGateway : AddressLookupGateway {
         val destinationRequests = mutableListOf<DestinationRequest>()
+        val suggestionRequests = mutableListOf<DestinationRequest>()
+        val resolveRequests = mutableListOf<ResolveRequest>()
         val reverseRequests = mutableListOf<ReverseRequest>()
         var closed = false
 
-        override fun searchDestination(
+        override fun suggestDestinations(
             query: String,
-            callback: (LookupResult<List<AddressCandidate>>) -> Unit,
+            near: AddressPoint?,
+            callback: (LookupResult<List<AddressSuggestion>>) -> Unit,
+        ) {
+            suggestionRequests += DestinationRequest(query, callback)
+        }
+
+        override fun searchDestinations(
+            query: String,
+            near: AddressPoint?,
+            callback: (LookupResult<List<AddressSuggestion>>) -> Unit,
         ) {
             destinationRequests += DestinationRequest(query, callback)
+        }
+
+        override fun resolveSuggestion(
+            suggestion: AddressSuggestion,
+            callback: (LookupResult<AddressCandidate>) -> Unit,
+        ) {
+            resolveRequests += ResolveRequest(suggestion, callback)
         }
 
         override fun reverseGeocode(
@@ -161,9 +213,16 @@ class AddressLookupControllerTest {
 
     private data class DestinationRequest(
         val query: String,
-        val callback: (LookupResult<List<AddressCandidate>>) -> Unit,
+        val callback: (LookupResult<List<AddressSuggestion>>) -> Unit,
     ) {
-        fun complete(result: LookupResult<List<AddressCandidate>>) = callback(result)
+        fun complete(result: LookupResult<List<AddressSuggestion>>) = callback(result)
+    }
+
+    private data class ResolveRequest(
+        val suggestion: AddressSuggestion,
+        val callback: (LookupResult<AddressCandidate>) -> Unit,
+    ) {
+        fun complete(result: LookupResult<AddressCandidate>) = callback(result)
     }
 
     private data class ReverseRequest(
@@ -175,12 +234,16 @@ class AddressLookupControllerTest {
 
     private class RecordingAddressLookupView : AddressLookupView {
         val destinations = mutableListOf<AddressCandidate>()
+        val suggestionBatches = mutableListOf<List<AddressSuggestion>>()
         val destinationErrors = mutableListOf<String>()
         val currentAddresses = mutableListOf<String>()
         val currentAddressErrors = mutableListOf<String>()
         var currentAddressLoadingCount = 0
 
         override fun onDestinationSearchStarted(query: String) = Unit
+        override fun onDestinationSuggestions(suggestions: List<AddressSuggestion>) {
+            suggestionBatches += suggestions
+        }
         override fun onDestinationFound(candidate: AddressCandidate) {
             destinations += candidate
         }
@@ -196,5 +259,16 @@ class AddressLookupControllerTest {
         override fun onCurrentAddressFailed(message: String) {
             currentAddressErrors += message
         }
+    }
+
+    private companion object {
+        fun suggestion(name: String, latitude: Double, longitude: Double) = AddressSuggestion(
+            stableId = name,
+            poiId = "poi-$name",
+            name = name,
+            district = "",
+            address = name,
+            point = AddressPoint(latitude, longitude),
+        )
     }
 }

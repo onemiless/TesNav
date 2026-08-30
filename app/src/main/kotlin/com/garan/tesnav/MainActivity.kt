@@ -15,6 +15,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemClock
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -22,10 +24,12 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
@@ -45,6 +49,7 @@ import com.garan.tesnav.search.AddressCandidate
 import com.garan.tesnav.search.AddressLookupController
 import com.garan.tesnav.search.AddressLookupView
 import com.garan.tesnav.search.AddressPoint
+import com.garan.tesnav.search.AddressSuggestion
 import com.garan.tesnav.search.AmapAddressLookupGateway
 import com.garan.tesnav.search.LocationFailure
 import com.garan.tesnav.search.selectLocationFailure
@@ -70,6 +75,8 @@ class MainActivity : Activity(), AddressLookupView {
     private lateinit var searchButton: Button
     private lateinit var searchProgress: ProgressBar
     private lateinit var searchStatus: TextView
+    private lateinit var suggestionList: ListView
+    private lateinit var suggestionAdapter: ArrayAdapter<String>
     private lateinit var currentAddressText: TextView
     private lateinit var searchPanel: LinearLayout
     private lateinit var addressLookupController: AddressLookupController
@@ -79,6 +86,7 @@ class MainActivity : Activity(), AddressLookupView {
     private var bindRequested = false
     private var stateJob: Job? = null
     private var locationStatusJob: Job? = null
+    private var suggestionJob: Job? = null
     private var currentState = NavigationState()
     private var previousMode: NavigationMode? = null
     private var destination: LatLng? = null
@@ -88,6 +96,8 @@ class MainActivity : Activity(), AddressLookupView {
     private var mapState = MapState.FOLLOW
     private var lastMapInteractionAt = 0L
     private var lastLocationPoint: AddressPoint? = null
+    private var suggestions: List<AddressSuggestion> = emptyList()
+    private var suppressTextChanges = false
 
     private val runtimeConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -157,6 +167,12 @@ class MainActivity : Activity(), AddressLookupView {
             textSize = 13f
             setTextColor(Color.rgb(84, 110, 122))
         }
+        suggestionAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf())
+        suggestionList = ListView(this).apply {
+            adapter = suggestionAdapter
+            visibility = View.GONE
+            dividerHeight = dp(1)
+        }
         currentAddressText = TextView(this).apply {
             text = "当前位置：定位中…"
             textSize = 14f
@@ -182,6 +198,9 @@ class MainActivity : Activity(), AddressLookupView {
         })
         addView(searchStatus, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(6)
+        })
+        addView(suggestionList, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(MAX_SUGGESTION_LIST_HEIGHT_DP)).apply {
+            topMargin = dp(4)
         })
     }
 
@@ -280,6 +299,28 @@ class MainActivity : Activity(), AddressLookupView {
                 false
             }
         }
+        destinationInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
+
+            override fun afterTextChanged(value: Editable?) {
+                if (suppressTextChanges || currentState.navigationMode != NavigationMode.IDLE) return
+                clearDestination()
+                suggestionJob?.cancel()
+                val query = value?.toString().orEmpty()
+                if (query.trim().length < MIN_SUGGESTION_QUERY_LENGTH) {
+                    addressLookupController.suggestDestinations(query, lastLocationPoint)
+                    return
+                }
+                suggestionJob = activityScope.launch {
+                    delay(SUGGESTION_DEBOUNCE_MS)
+                    addressLookupController.suggestDestinations(query, lastLocationPoint)
+                }
+            }
+        })
+        suggestionList.setOnItemClickListener { _, _, position, _ ->
+            suggestions.getOrNull(position)?.let(addressLookupController::selectSuggestion)
+        }
         settingsButton.setOnClickListener {
             runtimeService?.let { service ->
                 SettingsDialog(
@@ -301,7 +342,7 @@ class MainActivity : Activity(), AddressLookupView {
             toast("请先结束当前导航")
             return
         }
-        addressLookupController.searchDestination(destinationInput.text?.toString().orEmpty())
+        addressLookupController.searchDestination(destinationInput.text?.toString().orEmpty(), lastLocationPoint)
     }
 
     override fun onDestinationSearchStarted(query: String) = withLiveUi {
@@ -311,6 +352,19 @@ class MainActivity : Activity(), AddressLookupView {
         searchStatus.text = "正在搜索：$query"
     }
 
+    override fun onDestinationSuggestions(suggestions: List<AddressSuggestion>) = withLiveUi {
+        this.suggestions = suggestions
+        suggestionAdapter.clear()
+        suggestionAdapter.addAll(suggestions.map(::suggestionLabel))
+        suggestionAdapter.notifyDataSetChanged()
+        suggestionList.visibility = if (suggestions.isEmpty()) View.GONE else View.VISIBLE
+        if (suggestions.isNotEmpty()) {
+            finishDestinationSearch()
+            searchStatus.setTextColor(Color.rgb(0, 105, 92))
+            searchStatus.text = "请选择目的地（${suggestions.size} 个候选）"
+        }
+    }
+
     override fun onDestinationFound(candidate: AddressCandidate) = withLiveUi {
         finishDestinationSearch()
         if (currentState.navigationMode != NavigationMode.IDLE) {
@@ -318,6 +372,11 @@ class MainActivity : Activity(), AddressLookupView {
             return@withLiveUi
         }
         val point = LatLng(candidate.latitude, candidate.longitude)
+        suppressTextChanges = true
+        destinationInput.setText(candidate.name)
+        destinationInput.setSelection(destinationInput.text.length)
+        suppressTextChanges = false
+        onDestinationSuggestions(emptyList())
         selectDestination(point)
         mapView.map.animateCamera(CameraUpdateFactory.newLatLngZoom(point, DESTINATION_ZOOM))
         searchStatus.setTextColor(Color.rgb(0, 105, 92))
@@ -353,6 +412,14 @@ class MainActivity : Activity(), AddressLookupView {
     private fun finishDestinationSearch() {
         searchButton.isEnabled = true
         searchProgress.visibility = View.GONE
+    }
+
+    private fun suggestionLabel(suggestion: AddressSuggestion): String {
+        val detail = listOf(suggestion.district, suggestion.address)
+            .filter(String::isNotBlank)
+            .distinct()
+            .joinToString(" · ")
+        return if (detail.isBlank()) suggestion.name else "${suggestion.name}\n$detail"
     }
 
     private fun withLiveUi(action: () -> Unit) {
@@ -561,6 +628,7 @@ class MainActivity : Activity(), AddressLookupView {
     }
 
     override fun onDestroy() {
+        suggestionJob?.cancel()
         addressLookupController.close()
         activityScope.cancel()
         mapView.onDestroy()
@@ -611,6 +679,9 @@ class MainActivity : Activity(), AddressLookupView {
         const val BROWSE_TIMEOUT_MS = 15_000L
         const val LOCATION_INTERVAL_MS = 1_000L
         const val LOCATION_WAIT_TIMEOUT_MS = 12_000L
+        const val SUGGESTION_DEBOUNCE_MS = 300L
+        const val MIN_SUGGESTION_QUERY_LENGTH = 2
+        const val MAX_SUGGESTION_LIST_HEIGHT_DP = 280
     }
 
     private enum class MapState { FOLLOW, BROWSE }

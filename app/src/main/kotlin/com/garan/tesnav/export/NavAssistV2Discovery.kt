@@ -9,21 +9,20 @@ import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Collections
 import kotlin.math.min
 
 /** Authenticated, single-round result. Discovery never guesses or chooses the first responder. */
 sealed interface NavAssistV2DiscoveryResult {
-    data class Found(val sourceHost: String) : NavAssistV2DiscoveryResult
+    data class Found(val sourceHost: String, val deviceId: String) : NavAssistV2DiscoveryResult
     data object NotFound : NavAssistV2DiscoveryResult
     data object MultipleAuthenticatedHosts : NavAssistV2DiscoveryResult
     data class Failed(val reason: String) : NavAssistV2DiscoveryResult
 }
 
 fun interface NavAssistV2EndpointDiscovery {
-    fun discover(token: String): NavAssistV2DiscoveryResult
+    fun discover(): NavAssistV2DiscoveryResult
 }
 
 internal data class NavAssistV2Datagram(
@@ -40,26 +39,35 @@ internal fun interface NavAssistV2DiscoveryTransport {
  * Both probe and offer are authenticated; an offer-supplied host is never trusted.
  */
 class UdpNavAssistV2EndpointDiscovery internal constructor(
+    private val identity: NavAssistSigningIdentity,
+    private val pairingStore: NavAssistDevicePinStore,
     private val transport: NavAssistV2DiscoveryTransport = JvmUdpNavAssistV2DiscoveryTransport(),
     private val nonceFactory: () -> String = ::secureDiscoveryNonce,
 ) : NavAssistV2EndpointDiscovery {
-    override fun discover(token: String): NavAssistV2DiscoveryResult {
-        if (token.toByteArray(StandardCharsets.UTF_8).size < NavAssistV2Protocol.MIN_TOKEN_UTF8_BYTES) {
-            return NavAssistV2DiscoveryResult.Failed("NavAssist token 未配置")
-        }
+    override fun discover(): NavAssistV2DiscoveryResult {
         val nonce = nonceFactory()
         if (!NONCE_REGEX.matches(nonce)) {
             return NavAssistV2DiscoveryResult.Failed("发现 nonce 生成失败")
         }
 
         return runCatching {
-            val request = NavAssistV2DiscoveryWire.request(nonce, token)
-            val hosts = transport.exchange(request).mapNotNull { datagram ->
-                NavAssistV2DiscoveryWire.authenticatedOfferHost(datagram, nonce, token)
-            }.toSet()
-            when (hosts.size) {
+            val request = NavAssistV2DiscoveryWire.request(nonce, identity)
+            val pinned = pairingStore.pinnedDevice()
+            val candidates = transport.exchange(request).mapNotNull { datagram ->
+                NavAssistV2DiscoveryWire.authenticatedOffer(datagram, nonce, identity.keyId)
+            }.filter { candidate ->
+                pinned == null || pinned == PinnedNavAssistDevice(candidate.deviceId, candidate.devicePublicKey)
+            }.distinctBy { candidate -> candidate.deviceId to candidate.sourceHost }
+            when (candidates.size) {
                 0 -> NavAssistV2DiscoveryResult.NotFound
-                1 -> NavAssistV2DiscoveryResult.Found(hosts.single())
+                1 -> candidates.single().let { candidate ->
+                    val device = PinnedNavAssistDevice(candidate.deviceId, candidate.devicePublicKey)
+                    if (pairingStore.pin(device)) {
+                        NavAssistV2DiscoveryResult.Found(candidate.sourceHost, candidate.deviceId)
+                    } else {
+                        NavAssistV2DiscoveryResult.Failed("C3XL 自动配对冲突")
+                    }
+                }
                 else -> NavAssistV2DiscoveryResult.MultipleAuthenticatedHosts
             }
         }.getOrElse {
@@ -75,13 +83,14 @@ class UdpNavAssistV2EndpointDiscovery internal constructor(
 internal object NavAssistV2DiscoveryWire {
     private const val REQUEST_TYPE = "navassist_discovery_request"
     private const val OFFER_TYPE = "navassist_discovery_offer"
-    private val PROOF_REGEX = Regex("^[0-9a-f]{64}$")
-    private val REQUEST_KEYS = setOf("messageType", "schemaVersion", "nonce", "proof")
-    private val OFFER_KEYS = setOf("messageType", "schemaVersion", "nonce", "port", "path", "proof")
+    private val OFFER_KEYS = setOf(
+        "messageType", "schemaVersion", "nonce", "appKeyId", "deviceId", "devicePublicKey", "port", "path", "signature",
+    )
 
-    fun request(nonce: String, token: String): ByteArray {
+    fun request(nonce: String, identity: NavAssistSigningIdentity): ByteArray {
         require(UdpNavAssistV2EndpointDiscovery.NONCE_REGEX.matches(nonce)) { "invalid discovery nonce" }
-        val proof = HmacSha256.signLowerHex(requestProofMaterial(nonce), token)
+        val material = requestSignatureMaterial(nonce, identity.keyId, identity.publicKeyText)
+        val signature = identity.sign(material.toByteArray(StandardCharsets.UTF_8))
         return buildString {
             append("{\"messageType\":\"")
             append(REQUEST_TYPE)
@@ -89,17 +98,23 @@ internal object NavAssistV2DiscoveryWire {
             append(NavAssistV2Protocol.SCHEMA_VERSION)
             append(",\"nonce\":\"")
             append(nonce)
-            append("\",\"proof\":\"")
-            append(proof)
+            append("\",\"appKeyId\":\"")
+            append(identity.keyId)
+            append("\",\"appPublicKey\":\"")
+            append(identity.publicKeyText)
+            append("\",\"signature\":\"")
+            append(signature)
             append("\"}")
-        }.toByteArray(StandardCharsets.UTF_8)
+        }.toByteArray(StandardCharsets.UTF_8).also {
+            require(it.size <= NavAssistV2Discovery.MAX_DATAGRAM_BYTES) { "discovery request too large" }
+        }
     }
 
-    fun authenticatedOfferHost(
+    fun authenticatedOffer(
         datagram: NavAssistV2Datagram,
         expectedNonce: String,
-        token: String,
-    ): String? {
+        expectedAppKeyId: String,
+    ): AuthenticatedDiscoveryOffer? {
         if (datagram.payload.isEmpty() || datagram.payload.size > NavAssistV2Discovery.MAX_DATAGRAM_BYTES) return null
         val source = datagram.sourceAddress as? Inet4Address ?: return null
         if (!source.isSiteLocalAddress || source.isAnyLocalAddress || source.isLoopbackAddress || source.isMulticastAddress) return null
@@ -108,24 +123,37 @@ internal object NavAssistV2DiscoveryWire {
         if (fields.string("messageType") != OFFER_TYPE) return null
         if (fields.number("schemaVersion") != NavAssistV2Protocol.SCHEMA_VERSION.toLong()) return null
         if (fields.string("nonce") != expectedNonce || !UdpNavAssistV2EndpointDiscovery.NONCE_REGEX.matches(expectedNonce)) return null
+        if (fields.string("appKeyId") != expectedAppKeyId || !NavAssistEcdsa.validKeyId(expectedAppKeyId)) return null
+        val deviceId = fields.string("deviceId") ?: return null
+        val devicePublicKey = fields.string("devicePublicKey") ?: return null
+        if (!NavAssistEcdsa.validKeyId(deviceId) || runCatching { NavAssistEcdsa.publicKeyId(devicePublicKey) }.getOrNull() != deviceId) return null
         if (fields.number("port") != NavAssistV2Discovery.SNAPSHOT_PORT.toLong()) return null
         if (fields.string("path") != NavAssistV2Protocol.ENDPOINT_PATH) return null
-        val proof = fields.string("proof") ?: return null
-        if (!PROOF_REGEX.matches(proof)) return null
-        val expected = HmacSha256.signLowerHex(offerProofMaterial(expectedNonce), token)
-        if (!MessageDigest.isEqual(expected.toByteArray(StandardCharsets.US_ASCII), proof.toByteArray(StandardCharsets.US_ASCII))) {
-            return null
-        }
-        return source.hostAddress
+        val signature = fields.string("signature") ?: return null
+        val material = offerSignatureMaterial(
+            expectedNonce, expectedAppKeyId, deviceId, devicePublicKey,
+        ).toByteArray(StandardCharsets.UTF_8)
+        if (!NavAssistEcdsa.verify(devicePublicKey, material, signature)) return null
+        return AuthenticatedDiscoveryOffer(source.hostAddress ?: return null, deviceId, devicePublicKey)
     }
 
-    internal fun requestProofMaterial(nonce: String): String =
-        "$REQUEST_TYPE\n${NavAssistV2Protocol.SCHEMA_VERSION}\n$nonce"
+    internal fun requestSignatureMaterial(nonce: String, appKeyId: String, appPublicKey: String): String =
+        "$REQUEST_TYPE\n${NavAssistV2Protocol.SCHEMA_VERSION}\n$nonce\n$appKeyId\n$appPublicKey"
 
-    internal fun offerProofMaterial(nonce: String): String =
-        "$OFFER_TYPE\n${NavAssistV2Protocol.SCHEMA_VERSION}\n$nonce\n" +
-            "${NavAssistV2Discovery.SNAPSHOT_PORT}\n${NavAssistV2Protocol.ENDPOINT_PATH}"
+    internal fun offerSignatureMaterial(
+        nonce: String,
+        appKeyId: String,
+        deviceId: String,
+        devicePublicKey: String,
+    ): String = "$OFFER_TYPE\n${NavAssistV2Protocol.SCHEMA_VERSION}\n$nonce\n$appKeyId\n" +
+        "$deviceId\n$devicePublicKey\n${NavAssistV2Discovery.SNAPSHOT_PORT}\n${NavAssistV2Protocol.ENDPOINT_PATH}"
 }
+
+internal data class AuthenticatedDiscoveryOffer(
+    val sourceHost: String,
+    val deviceId: String,
+    val devicePublicKey: String,
+)
 
 internal object NavAssistV2Discovery {
     const val UDP_PORT = 7765

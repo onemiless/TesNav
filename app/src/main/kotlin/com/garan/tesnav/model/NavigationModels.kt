@@ -33,6 +33,17 @@ enum class NavigationManeuver {
 
 data class GeoPoint(val latitude: Double, val longitude: Double)
 
+data class RouteChoice(
+    val routeId: Int,
+    val pathId: Long,
+    val label: String,
+    val distanceMeters: Int,
+    val durationSeconds: Int,
+    val tollYuan: Int,
+    val trafficLightCount: Int,
+    val selected: Boolean,
+)
+
 data class LaneState(
     val index: Int,
     val allowedActions: List<LaneAction> = emptyList(),
@@ -101,4 +112,6 @@ data class NavigationState(
     @Transient val currentRoadType: Int? = null,
     @Transient val routeRevision: Long = 0L,
     @Transient val routeRecalculating: Boolean = false,
+    @Transient val routeChoices: List<RouteChoice> = emptyList(),
+    @Transient val selectedRouteId: Int? = null,
 )

@@ -17,17 +17,16 @@ import javax.crypto.spec.SecretKeySpec
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 object NavAssistV2Protocol {
-    const val SCHEMA_VERSION = 2
+    const val SCHEMA_VERSION = 3
     const val MESSAGE_TYPE = "navigation_snapshot"
     const val SOURCE_PLATFORM = "android"
     const val COORDINATE_SYSTEM = "gcj02"
-    const val ENDPOINT_PATH = "/v2/snapshot"
+    const val ENDPOINT_PATH = "/v3/snapshot"
     const val MIN_INTERVAL_MS = 200L
     const val DEFAULT_VALID_FOR_MS = 500L
     const val MIN_VALID_FOR_MS = 100L
     const val MAX_VALID_FOR_MS = 2_000L
-    const val MIN_TOKEN_UTF8_BYTES = 16
-    const val SIGNATURE_HEADER = "X-NavAssist-Signature"
+    const val SIGNATURE_HEADER = NavAssistV3Auth.SIGNATURE_HEADER
     const val SESSION_ID_PATTERN = "^[A-Za-z0-9._:-]+$"
     const val MAX_LOCATION_ACCURACY_M = 200f
     const val MAX_SPEED_KPH = 300f
@@ -37,13 +36,11 @@ object NavAssistV2Protocol {
 
 data class NavAssistV2ExportConfig(
     val baseUrl: String,
-    /** Shared HMAC secret. It is never transmitted as a header or body field. */
-    val token: String,
     val intervalMs: Long = NavAssistV2Protocol.MIN_INTERVAL_MS,
     val validForMs: Long = NavAssistV2Protocol.DEFAULT_VALID_FOR_MS,
 ) {
     fun isConfigured(): Boolean {
-        if (!hasValidTokenAndLifetime()) return false
+        if (!hasValidLifetime()) return false
         return baseUrl.isBlank() || hasValidExplicitUrl()
     }
 
@@ -54,11 +51,8 @@ data class NavAssistV2ExportConfig(
         return parsedUrl.scheme in setOf("http", "https")
     }
 
-    fun hasValidTokenAndLifetime(): Boolean =
-        token.isNotBlank() &&
-            token == token.trim() &&
-            token.toByteArray(StandardCharsets.UTF_8).size >= NavAssistV2Protocol.MIN_TOKEN_UTF8_BYTES &&
-            validForMs in NavAssistV2Protocol.MIN_VALID_FOR_MS..NavAssistV2Protocol.MAX_VALID_FOR_MS
+    fun hasValidLifetime(): Boolean =
+        validForMs in NavAssistV2Protocol.MIN_VALID_FOR_MS..NavAssistV2Protocol.MAX_VALID_FOR_MS
 }
 
 data class NavAssistV2Snapshot(

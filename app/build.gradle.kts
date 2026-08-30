@@ -35,11 +35,6 @@ android {
             (providers.gradleProperty("NAV_ASSIST_V2_URL").orNull ?: "").asBuildConfigString(),
         )
         buildConfigField(
-            "String",
-            "NAV_ASSIST_V2_TOKEN",
-            (providers.gradleProperty("NAV_ASSIST_V2_TOKEN").orNull ?: "").asBuildConfigString(),
-        )
-        buildConfigField(
             "long",
             "NAV_ASSIST_V2_INTERVAL_MS",
             "${navAssistV2IntervalMs}L",

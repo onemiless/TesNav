@@ -24,10 +24,12 @@ import com.garan.tesnav.data.NavigationRepository
 import com.garan.tesnav.data.NavigationStateStore
 import com.garan.tesnav.export.ExportConfig
 import com.garan.tesnav.export.ExportConnectionState
+import com.garan.tesnav.export.AndroidKeystoreNavAssistIdentity
 import com.garan.tesnav.export.HttpNavAssistV2Exporter
-import com.garan.tesnav.export.NavAssistV2ExportConfig
+import com.garan.tesnav.export.NavAssistPairingStore
 import com.garan.tesnav.export.NavAssistV2ConnectionStatus
-import com.garan.tesnav.export.NavAssistV2Protocol
+import com.garan.tesnav.export.NavAssistV2ExportConfig
+import com.garan.tesnav.export.UdpNavAssistV2EndpointDiscovery
 import com.garan.tesnav.export.WebSocketNavigationDataExporter
 import com.garan.tesnav.homeassistant.HomeAssistantConnectionState
 import com.garan.tesnav.homeassistant.HomeAssistantNavigationClient
@@ -56,14 +58,15 @@ class NavigationForegroundService : Service() {
         private set
     lateinit var exporter: WebSocketNavigationDataExporter
         private set
-    lateinit var navAssistV2Exporter: HttpNavAssistV2Exporter
+    private lateinit var navAssistV2Exporter: HttpNavAssistV2Exporter
         private set
     lateinit var homeAssistantClient: HomeAssistantNavigationClient
         private set
     private lateinit var repository: NavigationRepository
     private val exporterObservationJobs = mutableListOf<Job>()
     private var legacyExportEnabled = false
-    private var runtimeNavAssistToken = ""
+    private lateinit var navAssistIdentity: AndroidKeystoreNavAssistIdentity
+    private lateinit var navAssistPairingStore: NavAssistPairingStore
 
     private val mutableCommaConnectionState = MutableStateFlow(ExportConnectionState.STOPPED)
     val commaConnectionState: StateFlow<ExportConnectionState> = mutableCommaConnectionState.asStateFlow()
@@ -104,7 +107,10 @@ class NavigationForegroundService : Service() {
         commaStateStore = CommaStateStore()
         homeAssistantClient = HomeAssistantNavigationClient()
         mutableTeslaSyncEnabled.value = preferences().getBoolean(HA_SYNC_ENABLED, false)
-        runtimeNavAssistToken = loadOrMigrateNavAssistToken()
+        // v3 uses an Android Keystore identity; remove the obsolete shared-secret preference on upgrade.
+        getSharedPreferences("navassist_v2", MODE_PRIVATE).edit().clear().apply()
+        navAssistIdentity = AndroidKeystoreNavAssistIdentity.loadOrCreate(applicationContext)
+        navAssistPairingStore = NavAssistPairingStore(applicationContext)
         repository = NavigationRepository(applicationContext, stateStore) { path ->
             if (!legacyExportEnabled || !::exporter.isInitialized) return@NavigationRepository
             if (path == null) {
@@ -136,6 +142,7 @@ class NavigationForegroundService : Service() {
     }
 
     fun planRoute(latitude: Double, longitude: Double): Boolean = repository.planRoute(latitude, longitude)
+    fun selectRoute(routeId: Int): Boolean = repository.selectRoute(routeId)
     fun startRealtime(): Boolean = repository.startRealtime()
     fun startSimulation(): Boolean = repository.startSimulation()
     fun pauseSimulation(): Boolean = repository.pauseSimulation()
@@ -143,29 +150,10 @@ class NavigationForegroundService : Service() {
     fun stopNavigation() = repository.stopNavigation()
     fun currentPath(): AMapNaviPath? = repository.currentPath()
 
-    fun isNavAssistV2TokenConfigured(): Boolean =
-        NavAssistV2ExportConfig(baseUrl = "", token = runtimeNavAssistToken).hasValidTokenAndLifetime()
+    fun navAssistPairedDeviceId(): String? = navAssistPairingStore.pinnedDevice()?.deviceId
 
-    /** Saves the secret without ever returning or displaying its previous value. */
-    fun setNavAssistV2Token(token: String): String? {
-        if (token != token.trim()) return "Token 首尾不能包含空白字符"
-        val size = token.toByteArray(Charsets.UTF_8).size
-        if (size < NavAssistV2Protocol.MIN_TOKEN_UTF8_BYTES) {
-            return "Token 至少需要 ${NavAssistV2Protocol.MIN_TOKEN_UTF8_BYTES} 个 UTF-8 字节"
-        }
-        if (!navAssistPreferences().edit().putString(NAV_ASSIST_TOKEN, token).commit()) {
-            return "Token 保存失败，当前配置未更改"
-        }
-        runtimeNavAssistToken = token
-        rebuildDataExporters()
-        return null
-    }
-
-    fun clearNavAssistV2Token(): String? {
-        if (!navAssistPreferences().edit().putString(NAV_ASSIST_TOKEN, "").commit()) {
-            return "Token 清除失败，当前配置未更改"
-        }
-        runtimeNavAssistToken = ""
+    fun clearNavAssistPairing(): String? {
+        if (!navAssistPairingStore.clear()) return "清除自动配对失败"
         rebuildDataExporters()
         return null
     }
@@ -199,7 +187,6 @@ class NavigationForegroundService : Service() {
 
         val navAssistV2Config = NavAssistV2ExportConfig(
             baseUrl = BuildConfig.NAV_ASSIST_V2_URL,
-            token = runtimeNavAssistToken,
             intervalMs = BuildConfig.NAV_ASSIST_V2_INTERVAL_MS,
         )
         legacyExportEnabled = BuildConfig.EXPORT_ENABLED && !navAssistV2Config.isConfigured()
@@ -217,6 +204,9 @@ class NavigationForegroundService : Service() {
         navAssistV2Exporter = HttpNavAssistV2Exporter(
             config = navAssistV2Config,
             stateProvider = { stateStore.state.value },
+            identity = navAssistIdentity,
+            endpointDiscovery = UdpNavAssistV2EndpointDiscovery(navAssistIdentity, navAssistPairingStore),
+            pinnedDeviceProvider = navAssistPairingStore::pinnedDevice,
         )
         observeExporterInstances()
         exporter.start()
@@ -369,17 +359,6 @@ class NavigationForegroundService : Service() {
 
     private fun preferences() = getSharedPreferences(HA_PREFS, MODE_PRIVATE)
 
-    private fun navAssistPreferences() = getSharedPreferences(NAV_ASSIST_PREFS, MODE_PRIVATE)
-
-    private fun loadOrMigrateNavAssistToken(): String {
-        val preferences = navAssistPreferences()
-        if (preferences.contains(NAV_ASSIST_TOKEN)) return preferences.getString(NAV_ASSIST_TOKEN, "").orEmpty()
-        // BuildConfig is a one-time migration fallback for older configured test APKs.
-        val fallback = BuildConfig.NAV_ASSIST_V2_TOKEN
-        preferences.edit().putString(NAV_ASSIST_TOKEN, fallback).commit()
-        return fallback
-    }
-
     private fun updateNotification() {
         if (!::stateStore.isInitialized || !::exporter.isInitialized) return
         val content = "${stateStore.state.value.navigationMode.name} · Comma ${commaConnectionState.value.name} · " +
@@ -459,9 +438,6 @@ class NavigationForegroundService : Service() {
         private const val NOTIFICATION_ID = 1001
         const val HA_PREFS = "home_assistant_sync"
         const val HA_SYNC_ENABLED = "enabled"
-        private const val NAV_ASSIST_PREFS = "navassist_v2"
-        private const val NAV_ASSIST_TOKEN = "hmac_token"
-
         fun start(context: Context) {
             ContextCompat.startForegroundService(
                 context,

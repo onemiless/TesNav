@@ -17,6 +17,7 @@ import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.model.LaneState
 import com.garan.tesnav.model.NavigationManeuver
 import com.garan.tesnav.model.NavigationMode
+import com.garan.tesnav.model.RouteChoice
 import com.garan.tesnav.model.TrafficStatus
 import com.garan.tesnav.model.WarningLevel
 import com.garan.tesnav.util.NavigationMappers
@@ -35,6 +36,7 @@ class NavigationRepository(
     private var requestedNavigationMode: NavigationMode? = null
     private var publishedRouteSignature: String? = null
     private var routeRevision = 0L
+    private val routeSelection = RouteSelectionCoordinator { routeId -> navi?.selectRouteId(routeId) == true }
 
     fun initialize(): Result<Unit> = runCatching {
         navi = AMapNavi.getInstance(appContext).also {
@@ -48,6 +50,45 @@ class NavigationRepository(
     }.onFailure { error -> update { copy(errorMessage = "高德导航初始化失败：${error.message}") } }
 
     fun currentPath(): AMapNaviPath? = navi?.naviPath
+
+    fun selectRoute(routeId: Int): Boolean {
+        val current = stateStore.state.value
+        if (current.navigationMode != NavigationMode.ROUTE_PLANNED || !current.routePlanned) return false
+        return when (routeSelection.select(routeId, current.routeChoices, current.selectedRouteId)) {
+            RouteSelectionOutcome.REJECTED -> false
+            RouteSelectionOutcome.ALREADY_SELECTED -> true
+            RouteSelectionOutcome.SELECTED -> {
+                val path = navi?.naviPaths?.get(routeId) ?: return false
+                val choices = current.routeChoices.map { it.copy(selected = it.routeId == routeId) }
+                val observedAtMs = System.currentTimeMillis()
+                val revision = ++routeRevision
+                update {
+                    copy(
+                        routeRemainDistanceMeters = path.allLength,
+                        routeRemainTimeSeconds = path.allTime,
+                        remainingTrafficLightCount = path.trafficLightCount,
+                        routeTrafficLights = path.lightList.orEmpty().map { GeoPoint(it.latitude, it.longitude) },
+                        routeChoices = choices,
+                        selectedRouteId = routeId,
+                        routeRevision = revision,
+                        routeObservedAtMs = observedAtMs,
+                        guidanceObservedAtMs = null,
+                        lanesObservedAtMs = null,
+                        currentStepIndex = null,
+                        currentLinkIndex = null,
+                        currentPointIndex = null,
+                        routeMatched = null,
+                        maneuver = NavigationManeuver.UNKNOWN,
+                        guidanceStepIndex = null,
+                        currentRoadClass = null,
+                        currentRoadType = null,
+                    )
+                }
+                publishRouteIfChanged(path)
+                true
+            }
+        }
+    }
 
     fun planRoute(
         latitude: Double,
@@ -325,7 +366,10 @@ class NavigationRepository(
         if (!routeCalculationPending && !previousState.routePlanned) return
         val routeRevisionChanged = routeCalculationPending || previousState.routeRecalculating
         routeCalculationPending = false
-        val path = navi?.naviPath
+        val engine = navi
+        val path = engine?.naviPath
+        val choices = engine?.let { routeChoices(it, path) }.orEmpty()
+        val selectedRouteId = choices.firstOrNull { it.selected }?.routeId
         val observedAtMs = System.currentTimeMillis()
         val revision = if (routeRevisionChanged) ++routeRevision else routeRevision
         update {
@@ -337,6 +381,8 @@ class NavigationRepository(
                 routeRemainTimeSeconds = path?.allTime,
                 remainingTrafficLightCount = path?.trafficLightCount,
                 routeTrafficLights = path?.lightList.orEmpty().map { GeoPoint(it.latitude, it.longitude) },
+                routeChoices = choices,
+                selectedRouteId = selectedRouteId,
                 errorMessage = null,
                 routeRevision = revision,
                 routeObservedAtMs = if (routeRevisionChanged) observedAtMs else routeObservedAtMs,
@@ -356,6 +402,22 @@ class NavigationRepository(
         }
         publishRouteIfChanged(path)
     }
+
+    private fun routeChoices(engine: AMapNavi, selectedPath: AMapNaviPath?): List<RouteChoice> =
+        engine.naviPaths.orEmpty().entries
+            .sortedBy { it.key }
+            .map { (routeId, path) ->
+                RouteChoice(
+                    routeId = routeId,
+                    pathId = path.pathid,
+                    label = path.labels?.trim().orEmpty(),
+                    distanceMeters = path.allLength,
+                    durationSeconds = path.allTime,
+                    tollYuan = path.tollCost,
+                    trafficLightCount = path.trafficLightCount,
+                    selected = selectedPath != null && path.pathid == selectedPath.pathid,
+                )
+            }
 
     override fun onCalculateRouteFailure(errorCode: Int) = routeFailed("路线规划失败：$errorCode")
     override fun onCalculateRouteFailure(result: AMapCalcRouteResult?) =
@@ -469,6 +531,8 @@ class NavigationRepository(
         currentRoadClass = null,
         currentRoadType = null,
         routeRecalculating = false,
+        routeChoices = emptyList(),
+        selectedRouteId = null,
     )
 
     private companion object {

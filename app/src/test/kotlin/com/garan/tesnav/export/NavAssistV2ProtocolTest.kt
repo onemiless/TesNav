@@ -65,7 +65,7 @@ class NavAssistV2ProtocolTest {
             validForMs = 500L,
         )
 
-        assertEquals(2, snapshot.schemaVersion)
+        assertEquals(3, snapshot.schemaVersion)
         assertEquals("navigation_snapshot", snapshot.messageType)
         assertEquals("android", snapshot.sourcePlatform)
         assertEquals("gcj02", snapshot.coordinateSystem)
@@ -160,24 +160,20 @@ class NavAssistV2ProtocolTest {
     }
 
     @Test
-    fun `v2 exporter supports discovery and rejects malformed explicit URLs`() {
-        val strongToken = "0123456789abcdef"
-        assertTrue(NavAssistV2ExportConfig(baseUrl = "", token = strongToken).isConfigured())
-        assertTrue(NavAssistV2ExportConfig(baseUrl = "", token = strongToken).usesDiscovery())
-        assertFalse(NavAssistV2ExportConfig(baseUrl = "not-a-url", token = strongToken).isConfigured())
-        assertFalse(NavAssistV2ExportConfig(baseUrl = "ftp://c3xl.local", token = strongToken).isConfigured())
-        assertFalse(NavAssistV2ExportConfig(baseUrl = "not-a-url", token = strongToken).usesDiscovery())
-        assertFalse(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = "").isConfigured())
-        assertFalse(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = "too-short").isConfigured())
-        assertFalse(NavAssistV2ExportConfig(baseUrl = "", token = "$strongToken\n").isConfigured())
+    fun `v3 exporter supports automatic discovery without a manual token`() {
+        assertTrue(NavAssistV2ExportConfig(baseUrl = "").isConfigured())
+        assertTrue(NavAssistV2ExportConfig(baseUrl = "").usesDiscovery())
+        assertFalse(NavAssistV2ExportConfig(baseUrl = "not-a-url").isConfigured())
+        assertFalse(NavAssistV2ExportConfig(baseUrl = "ftp://c3xl.local").isConfigured())
+        assertFalse(NavAssistV2ExportConfig(baseUrl = "not-a-url").usesDiscovery())
         assertFalse(
-            NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = strongToken, validForMs = 99L).isConfigured(),
+            NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", validForMs = 99L).isConfigured(),
         )
         assertFalse(
-            NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = strongToken, validForMs = 2_001L).isConfigured(),
+            NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", validForMs = 2_001L).isConfigured(),
         )
-        assertTrue(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = strongToken).isConfigured())
-        assertFalse(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local", token = strongToken).usesDiscovery())
+        assertTrue(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local").isConfigured())
+        assertFalse(NavAssistV2ExportConfig(baseUrl = "http://c3xl.local").usesDiscovery())
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -190,18 +186,20 @@ class NavAssistV2ProtocolTest {
         val exporter = HttpNavAssistV2Exporter(
             config = NavAssistV2ExportConfig(
                 baseUrl = "http://c3xl.local:7766/ignored-base-path",
-                token = "0123456789abcdef",
             ),
             stateProvider = { null },
+            identity = AndroidKeystoreNavAssistIdentity.generatedForTest(),
+            endpointDiscovery = NavAssistV2EndpointDiscovery { NavAssistV2DiscoveryResult.NotFound },
+            pinnedDeviceProvider = { null },
         )
 
         try {
             assertEquals(
-                "http://c3xl.local:7766/v2/snapshot",
+                "http://c3xl.local:7766/v3/snapshot",
                 exporter.snapshotEndpoint("http://c3xl.local:7766/ignored-base-path").toString(),
             )
             assertEquals(
-                "http://192.168.53.232:7766/v2/snapshot",
+                "http://192.168.53.232:7766/v3/snapshot",
                 exporter.discoveryEndpoint("192.168.53.232").toString(),
             )
         } finally {
