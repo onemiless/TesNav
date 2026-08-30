@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.location.Location
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -45,6 +46,8 @@ import com.garan.tesnav.search.AddressLookupController
 import com.garan.tesnav.search.AddressLookupView
 import com.garan.tesnav.search.AddressPoint
 import com.garan.tesnav.search.AmapAddressLookupGateway
+import com.garan.tesnav.search.LocationFailure
+import com.garan.tesnav.search.selectLocationFailure
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.ui.NavigationStateDialog
 import com.garan.tesnav.ui.SettingsDialog
@@ -225,11 +228,10 @@ class MainActivity : Activity(), AddressLookupView {
             }
         }
         mapView.map.setOnMyLocationChangeListener { location ->
-            val amapLocation = location as? AMapLocation
-            if (amapLocation != null && amapLocation.errorCode != 0) {
+            locationFailure(location)?.let { failure ->
                 lastLocationPoint = null
                 addressLookupController.locationFailed(
-                    "定位失败（${amapLocation.errorCode}）：${amapLocation.errorInfo.orEmpty().ifBlank { "尚无有效定位" }}",
+                    "定位失败（${failure.errorCode}）：${failure.errorInfo}",
                 )
                 return@setOnMyLocationChangeListener
             }
@@ -368,6 +370,22 @@ class MainActivity : Activity(), AddressLookupView {
         point.latitude.isFinite() && point.longitude.isFinite() &&
             point.latitude in -90.0..90.0 && point.longitude in -180.0..180.0 &&
             (point.latitude != 0.0 || point.longitude != 0.0)
+
+    private fun locationFailure(location: Location): LocationFailure? {
+        val extrasErrorCode = runCatching {
+            location.extras?.getInt(MyLocationStyle.ERROR_CODE, 0) ?: 0
+        }.getOrDefault(0)
+        val extrasErrorInfo = runCatching {
+            location.extras?.getString(MyLocationStyle.ERROR_INFO)
+        }.getOrNull()
+        val amapLocation = location as? AMapLocation
+        return selectLocationFailure(
+            extrasErrorCode = extrasErrorCode,
+            extrasErrorInfo = extrasErrorInfo,
+            subtypeErrorCode = amapLocation?.errorCode ?: 0,
+            subtypeErrorInfo = amapLocation?.errorInfo,
+        )
+    }
 
     private fun selectDestination(point: LatLng) {
         if (currentState.navigationMode != NavigationMode.IDLE) {
