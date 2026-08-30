@@ -24,6 +24,8 @@ import com.garan.tesnav.data.NavigationRepository
 import com.garan.tesnav.data.NavigationStateStore
 import com.garan.tesnav.export.ExportConfig
 import com.garan.tesnav.export.ExportConnectionState
+import com.garan.tesnav.export.HttpNavAssistV2Exporter
+import com.garan.tesnav.export.NavAssistV2ExportConfig
 import com.garan.tesnav.export.WebSocketNavigationDataExporter
 import com.garan.tesnav.homeassistant.HomeAssistantConnectionState
 import com.garan.tesnav.homeassistant.HomeAssistantNavigationClient
@@ -51,6 +53,7 @@ class NavigationForegroundService : Service() {
         private set
     lateinit var exporter: WebSocketNavigationDataExporter
         private set
+    private lateinit var navAssistV2Exporter: HttpNavAssistV2Exporter
     lateinit var homeAssistantClient: HomeAssistantNavigationClient
         private set
     private lateinit var repository: NavigationRepository
@@ -83,8 +86,14 @@ class NavigationForegroundService : Service() {
         commaStateStore = CommaStateStore()
         homeAssistantClient = HomeAssistantNavigationClient()
         mutableTeslaSyncEnabled.value = preferences().getBoolean(HA_SYNC_ENABLED, false)
+        val navAssistV2Config = NavAssistV2ExportConfig(
+            baseUrl = BuildConfig.NAV_ASSIST_V2_URL,
+            token = BuildConfig.NAV_ASSIST_V2_TOKEN,
+            intervalMs = BuildConfig.NAV_ASSIST_V2_INTERVAL_MS,
+        )
+        val legacyExportEnabled = BuildConfig.EXPORT_ENABLED && !navAssistV2Config.isConfigured()
         repository = NavigationRepository(applicationContext, stateStore) { path ->
-            if (!::exporter.isInitialized) return@NavigationRepository
+            if (!legacyExportEnabled || !::exporter.isInitialized) return@NavigationRepository
             if (path == null) {
                 exporter.clearRoute()
             } else {
@@ -98,7 +107,9 @@ class NavigationForegroundService : Service() {
         repository.initialize()
         exporter = WebSocketNavigationDataExporter(
             config = ExportConfig(
-                enabled = BuildConfig.EXPORT_ENABLED,
+                // A configured v2 endpoint takes ownership of the phone-to-C3 link,
+                // preventing the legacy default endpoint from reconnecting in parallel.
+                enabled = legacyExportEnabled,
                 webSocketUrl = BuildConfig.WEBSOCKET_URL,
                 apiToken = BuildConfig.API_TOKEN,
                 intervalMs = BuildConfig.EXPORT_INTERVAL_MS,
@@ -106,8 +117,13 @@ class NavigationForegroundService : Service() {
             stateProvider = { stateStore.state.value },
             onCommaState = commaStateStore::set,
         )
+        navAssistV2Exporter = HttpNavAssistV2Exporter(
+            config = navAssistV2Config,
+            stateProvider = { stateStore.state.value },
+        )
         observeRuntime()
         exporter.start()
+        navAssistV2Exporter.start()
         if (mutableTeslaSyncEnabled.value) startHomeAssistant()
     }
 
@@ -141,6 +157,7 @@ class NavigationForegroundService : Service() {
 
     override fun onDestroy() {
         if (::homeAssistantClient.isInitialized) homeAssistantClient.release()
+        if (::navAssistV2Exporter.isInitialized) navAssistV2Exporter.stop()
         if (::exporter.isInitialized) exporter.stop()
         if (::repository.isInitialized) repository.release()
         releaseWakeLock()

@@ -15,6 +15,7 @@ import com.amap.api.navi.model.AMapNaviPath
 import com.garan.tesnav.model.CameraState
 import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.model.LaneState
+import com.garan.tesnav.model.NavigationManeuver
 import com.garan.tesnav.model.NavigationMode
 import com.garan.tesnav.model.TrafficStatus
 import com.garan.tesnav.model.WarningLevel
@@ -33,6 +34,7 @@ class NavigationRepository(
     private var routeCalculationPending = false
     private var requestedNavigationMode: NavigationMode? = null
     private var publishedRouteSignature: String? = null
+    private var routeRevision = 0L
 
     fun initialize(): Result<Unit> = runCatching {
         navi = AMapNavi.getInstance(appContext).also {
@@ -65,11 +67,15 @@ class NavigationRepository(
         engine.stopNavi()
         routeCalculationPending = true
         requestedNavigationMode = null
+        val routeInvalidatedAtMs = System.currentTimeMillis()
+        val revision = if (current.routePlanned) ++routeRevision else routeRevision
         update {
             clearRouteValues().copy(
                 navigationMode = NavigationMode.IDLE,
                 startedFromTeslaSync = startedFromTeslaSync,
                 errorMessage = null,
+                routeRevision = revision,
+                routeObservedAtMs = if (current.routePlanned) routeInvalidatedAtMs else routeObservedAtMs,
             )
         }
         val accepted = runCatching {
@@ -131,7 +137,16 @@ class NavigationRepository(
         routeCalculationPending = false
         requestedNavigationMode = null
         navi?.stopNavi()
-        update { clearRouteValues().copy(navigationMode = NavigationMode.IDLE, errorMessage = null) }
+        val observedAtMs = System.currentTimeMillis()
+        val revision = ++routeRevision
+        update {
+            clearRouteValues().copy(
+                navigationMode = NavigationMode.IDLE,
+                errorMessage = null,
+                routeRevision = revision,
+                routeObservedAtMs = observedAtMs,
+            )
+        }
         clearPublishedRoute()
     }
 
@@ -159,6 +174,7 @@ class NavigationRepository(
 
     override fun onLocationChange(location: AMapNaviLocation?) {
         if (location == null) return
+        val observedAtMs = System.currentTimeMillis()
         val speed = location.speed.coerceAtLeast(0f)
         val overspeed = overspeedEvaluator.evaluate(speed, stateStore.state.value.cameras)
         update {
@@ -173,12 +189,23 @@ class NavigationRepository(
                 isOverspeed = overspeed.isOverspeed,
                 hasSpeedCameraAhead = overspeed.hasSpeedCameraAhead,
                 warningLevel = overspeed.warningLevel,
+                locationObservedAtMs = observedAtMs,
+                currentStepIndex = location.curStepIndex.takeIf { it >= 0 },
+                currentLinkIndex = location.curLinkIndex.takeIf { it >= 0 },
+                currentPointIndex = location.curPointIndex.takeIf { it >= 0 },
+                routeMatched = location.isMatchNaviPath,
             )
         }
     }
 
     override fun onNaviInfoUpdate(info: NaviInfo?) {
         if (info == null || !stateStore.state.value.routePlanned) return
+        val observedAtMs = System.currentTimeMillis()
+        val stepIndex = info.curStep.takeIf { it >= 0 }
+        val linkIndex = info.curLink.takeIf { it >= 0 }
+        val currentLink = stepIndex?.let { step ->
+            linkIndex?.let { link -> navi?.naviPath?.steps?.getOrNull(step)?.links?.getOrNull(link) }
+        }
         update {
             copy(
                 currentRoad = info.currentRoadName?.takeIf(String::isNotBlank),
@@ -188,6 +215,11 @@ class NavigationRepository(
                 routeRemainDistanceMeters = info.pathRetainDistance,
                 routeRemainTimeSeconds = info.pathRetainTime,
                 remainingTrafficLightCount = info.routeRemainLightCount.takeIf { it >= 0 },
+                guidanceObservedAtMs = observedAtMs,
+                maneuver = NavigationMappers.maneuver(info.iconType),
+                guidanceStepIndex = stepIndex,
+                currentRoadClass = NavigationMappers.validRoadClass(currentLink?.roadClass),
+                currentRoadType = NavigationMappers.validRoadType(currentLink?.roadType),
             )
         }
     }
@@ -233,6 +265,7 @@ class NavigationRepository(
 
     override fun showLaneInfo(laneInfos: Array<out AMapLaneInfo>?, background: ByteArray?, recommended: ByteArray?) {
         if (!stateStore.state.value.routePlanned) return
+        val observedAtMs = System.currentTimeMillis()
         val raw = background ?: byteArrayOf()
         val front = recommended ?: byteArrayOf()
         val firstPadding = raw.indexOfFirst { it.toInt().and(0xff) == 0xff }
@@ -254,13 +287,15 @@ class NavigationRepository(
                 recommended = recommendedActions[index].isNotEmpty(),
                 rawLaneType = laneRaw,
                 recommendedActions = recommendedActions[index],
+                rawRecommendedLaneType = front.getOrNull(index)?.toInt()?.and(0xff)?.takeUnless { it in setOf(15, 22, 255) },
             )
         }
-        update { copy(lanes = lanes) }
+        update { copy(lanes = lanes, lanesObservedAtMs = observedAtMs) }
     }
 
     override fun showLaneInfo(laneInfo: AMapLaneInfo?) {
         if (laneInfo == null || !stateStore.state.value.routePlanned) return
+        val observedAtMs = System.currentTimeMillis()
         val count = laneInfo.laneCount.coerceAtLeast(0)
         val recommendedActions = NavigationMappers.laneRecommendedActions(count, laneInfo.frontLane)
         val lanes = (0 until count).map { index ->
@@ -271,20 +306,28 @@ class NavigationRepository(
                 recommended = recommendedActions[index].isNotEmpty(),
                 rawLaneType = raw,
                 recommendedActions = recommendedActions[index],
+                rawRecommendedLaneType = laneInfo.frontLane?.getOrNull(index)?.takeUnless { it in setOf(15, 22, 255) },
             )
         }
-        update { copy(lanes = lanes) }
+        update { copy(lanes = lanes, lanesObservedAtMs = observedAtMs) }
     }
 
-    override fun hideLaneInfo() = update { copy(lanes = emptyList()) }
+    override fun hideLaneInfo() {
+        val observedAtMs = System.currentTimeMillis()
+        update { copy(lanes = emptyList(), lanesObservedAtMs = observedAtMs) }
+    }
 
     override fun onCalculateRouteSuccess(routeIds: IntArray?) = routeSucceeded()
     override fun onCalculateRouteSuccess(result: AMapCalcRouteResult?) = routeSucceeded()
 
     private fun routeSucceeded() {
-        if (!routeCalculationPending && !stateStore.state.value.routePlanned) return
+        val previousState = stateStore.state.value
+        if (!routeCalculationPending && !previousState.routePlanned) return
+        val routeRevisionChanged = routeCalculationPending || previousState.routeRecalculating
         routeCalculationPending = false
         val path = navi?.naviPath
+        val observedAtMs = System.currentTimeMillis()
+        val revision = if (routeRevisionChanged) ++routeRevision else routeRevision
         update {
             copy(
                 navigationMode = if (routePlanned) navigationMode else NavigationMode.ROUTE_PLANNED,
@@ -295,6 +338,20 @@ class NavigationRepository(
                 remainingTrafficLightCount = path?.trafficLightCount,
                 routeTrafficLights = path?.lightList.orEmpty().map { GeoPoint(it.latitude, it.longitude) },
                 errorMessage = null,
+                routeRevision = revision,
+                routeObservedAtMs = if (routeRevisionChanged) observedAtMs else routeObservedAtMs,
+                routeRecalculating = false,
+                // A new route revision must receive fresh route-relative observations.
+                guidanceObservedAtMs = if (routeRevisionChanged) null else guidanceObservedAtMs,
+                lanesObservedAtMs = if (routeRevisionChanged) null else lanesObservedAtMs,
+                currentStepIndex = if (routeRevisionChanged) null else currentStepIndex,
+                currentLinkIndex = if (routeRevisionChanged) null else currentLinkIndex,
+                currentPointIndex = if (routeRevisionChanged) null else currentPointIndex,
+                routeMatched = if (routeRevisionChanged) null else routeMatched,
+                maneuver = if (routeRevisionChanged) NavigationManeuver.UNKNOWN else maneuver,
+                guidanceStepIndex = if (routeRevisionChanged) null else guidanceStepIndex,
+                currentRoadClass = if (routeRevisionChanged) null else currentRoadClass,
+                currentRoadType = if (routeRevisionChanged) null else currentRoadType,
             )
         }
         publishRouteIfChanged(path)
@@ -305,14 +362,42 @@ class NavigationRepository(
         routeFailed("路线规划失败：${result?.errorCode ?: -1} ${result?.errorDescription.orEmpty()}")
 
     private fun routeFailed(message: String) {
-        if (!routeCalculationPending) return
+        if (!routeCalculationPending && !stateStore.state.value.routeRecalculating) return
         routeCalculationPending = false
-        update { clearRouteValues().copy(errorMessage = message) }
+        val observedAtMs = System.currentTimeMillis()
+        val revision = ++routeRevision
+        update {
+            clearRouteValues().copy(
+                errorMessage = message,
+                routeRevision = revision,
+                routeObservedAtMs = observedAtMs,
+            )
+        }
         clearPublishedRoute()
     }
 
-    override fun onReCalculateRouteForYaw() = update { copy(errorMessage = "检测到偏航，正在重新规划") }
-    override fun onReCalculateRouteForTrafficJam() = update { copy(errorMessage = "因拥堵重新规划路线") }
+    override fun onReCalculateRouteForYaw() = update {
+        copy(
+            errorMessage = "检测到偏航，正在重新规划",
+            routeRecalculating = true,
+            maneuver = NavigationManeuver.UNKNOWN,
+            guidanceObservedAtMs = null,
+            lanesObservedAtMs = null,
+            currentRoadClass = null,
+            currentRoadType = null,
+        )
+    }
+    override fun onReCalculateRouteForTrafficJam() = update {
+        copy(
+            errorMessage = "因拥堵重新规划路线",
+            routeRecalculating = true,
+            maneuver = NavigationManeuver.UNKNOWN,
+            guidanceObservedAtMs = null,
+            lanesObservedAtMs = null,
+            currentRoadClass = null,
+            currentRoadType = null,
+        )
+    }
     override fun onArriveDestination() = update {
         copy(navigationMode = NavigationMode.ARRIVED, simulationPaused = false, errorMessage = null)
     }
@@ -373,6 +458,17 @@ class NavigationRepository(
         warningLevel = WarningLevel.NONE,
         routePlanned = false,
         startedFromTeslaSync = false,
+        guidanceObservedAtMs = null,
+        lanesObservedAtMs = null,
+        currentStepIndex = null,
+        currentLinkIndex = null,
+        currentPointIndex = null,
+        routeMatched = null,
+        maneuver = NavigationManeuver.NONE,
+        guidanceStepIndex = null,
+        currentRoadClass = null,
+        currentRoadType = null,
+        routeRecalculating = false,
     )
 
     private companion object {

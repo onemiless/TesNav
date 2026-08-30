@@ -57,6 +57,11 @@ HOME_ASSISTANT_TOKEN=xxxx
 
 ```
 
+可选的 NavAssist v2 手机到 C3XL 单向 HTTP 出口默认关闭；只有同时配置
+`NAV_ASSIST_V2_URL` 与 `NAV_ASSIST_V2_TOKEN` 才会启动。协议、HMAC、字段新鲜度和
+兼容性约定见 [`docs/NAVASSIST_V2.md`](docs/NAVASSIST_V2.md)。原 WebSocket v1
+配置和默认行为不受影响。
+
 ## 构建与安装
 
 克隆仓库并进入项目目录：
