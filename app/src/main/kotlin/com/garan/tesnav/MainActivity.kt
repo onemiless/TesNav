@@ -56,6 +56,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -77,6 +78,7 @@ class MainActivity : Activity(), AddressLookupView {
     private var runtimeService: NavigationForegroundService? = null
     private var bindRequested = false
     private var stateJob: Job? = null
+    private var locationStatusJob: Job? = null
     private var currentState = NavigationState()
     private var previousMode: NavigationMode? = null
     private var destination: LatLng? = null
@@ -230,18 +232,20 @@ class MainActivity : Activity(), AddressLookupView {
         mapView.map.setOnMyLocationChangeListener { location ->
             locationFailure(location)?.let { failure ->
                 lastLocationPoint = null
-                addressLookupController.locationFailed(
+                showLocationFailure(
                     "定位失败（${failure.errorCode}）：${failure.errorInfo}",
                 )
                 return@setOnMyLocationChangeListener
             }
             val point = AddressPoint(location.latitude, location.longitude)
             if (isValidLocation(point)) {
+                locationStatusJob?.cancel()
+                locationStatusJob = null
                 lastLocationPoint = point
                 addressLookupController.updateLocation(point)
             } else {
                 lastLocationPoint = null
-                addressLookupController.locationFailed("尚无有效定位")
+                showLocationFailure("尚无有效定位")
                 return@setOnMyLocationChangeListener
             }
 
@@ -387,6 +391,22 @@ class MainActivity : Activity(), AddressLookupView {
         )
     }
 
+    private fun showLocationFailure(message: String) {
+        locationStatusJob?.cancel()
+        locationStatusJob = null
+        addressLookupController.locationFailed(message)
+    }
+
+    private fun scheduleLocationStatusTimeout() {
+        locationStatusJob?.cancel()
+        locationStatusJob = activityScope.launch {
+            delay(LOCATION_WAIT_TIMEOUT_MS)
+            if (lastLocationPoint == null) {
+                addressLookupController.locationFailed("尚无有效定位，请到开阔区域或检查定位设置")
+            }
+        }
+    }
+
     private fun selectDestination(point: LatLng) {
         if (currentState.navigationMode != NavigationMode.IDLE) {
             toast("请先结束当前导航")
@@ -438,6 +458,7 @@ class MainActivity : Activity(), AddressLookupView {
     private fun enableMapLocation() {
         applyLocationMode(MyLocationStyle.LOCATION_TYPE_LOCATION_ROTATE)
         mapView.map.isMyLocationEnabled = true
+        scheduleLocationStatusTimeout()
     }
 
     private fun applyLocationMode(type: Int) {
@@ -500,7 +521,7 @@ class MainActivity : Activity(), AddressLookupView {
                 startRuntimeService()
                 requestRemainingPermissions()
             } else {
-                addressLookupController.locationFailed("定位权限未授予")
+                showLocationFailure("定位权限未授予")
             }
             NOTIFICATION_PERMISSION_REQUEST -> requestBackgroundLocationPermission()
         }
@@ -589,6 +610,7 @@ class MainActivity : Activity(), AddressLookupView {
         const val MOVING_SPEED_MPS = 1f
         const val BROWSE_TIMEOUT_MS = 15_000L
         const val LOCATION_INTERVAL_MS = 1_000L
+        const val LOCATION_WAIT_TIMEOUT_MS = 12_000L
     }
 
     private enum class MapState { FOLLOW, BROWSE }
