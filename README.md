@@ -1,6 +1,8 @@
 # TesNav
 
-TesNav 是一个面向车载 Android 设备的导航应用。它使用高德地图与导航 SDK 提供地图选点、路线规划、实时导航和模拟导航，并将当前导航状态与路线数据通过 WebSocket 发送给 Comma 端。同时，应用可以读取 Home Assistant 中的特斯拉导航状态和目的地，在特斯拉开始导航时自动规划同一目的地。
+TesNav 提供 Android 和 iOS 手机端导航应用。两端使用高德地图与导航 SDK
+进行地址搜索、路线规划和实时导航，并通过局域网自动发现 C3XL，将经过签名的
+高层导航状态发送给 NavAssist；不需要共享 Token。
 
 ## 主要功能
 
@@ -86,6 +88,10 @@ app/build/outputs/apk/debug/app-debug.apk
 ```
 
 也可以直接使用 Android Studio 打开项目并运行到 Android 设备。
+
+iOS 工程位于 [`ios/`](ios/README.md)，使用 XcodeGen 与 CocoaPods 生成，支持
+模糊地址搜索、当前地址、多路线选择、实时语音导航、后台播报和 C3XL v3
+自动发现。iOS 高德 Key 必须绑定 Bundle ID `com.garan.tesnav.ios`。
 
 首次启动时需要授予定位、后台定位和通知等权限。进入地图后长按目标位置，再点击“导航到这里”即可规划路线。
 

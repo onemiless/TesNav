@@ -3,3 +3,8 @@
 local.properties
 **/build/
 .DS_Store
+ios/Config.local.xcconfig
+ios/Pods/
+ios/*.xcworkspace/
+ios/*.xcodeproj/
+ios/DerivedData/
