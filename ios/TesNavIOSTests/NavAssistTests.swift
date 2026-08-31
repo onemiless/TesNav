@@ -86,4 +86,20 @@ final class NavAssistTests: XCTestCase {
     XCTAssertEqual(AMapLaneActionMapper.actions(21), ["BUS"])
     XCTAssertEqual(AMapLaneActionMapper.actions(255), ["UNKNOWN"])
   }
+
+  func testAMapSCodeMismatchExplainsRequiredIOSBundleBinding() {
+    let message = AMapSearchFailureMessage.currentAddress(
+      NSError(domain: "AMapSearchErrorDomain", code: 1008)
+    )
+    XCTAssertTrue(message.contains("com.garan.tesnav.ios"))
+    XCTAssertTrue(message.contains("1008"))
+  }
+
+  func testAMapNetworkFailureHasActionableMessage() {
+    let message = AMapSearchFailureMessage.search(
+      NSError(domain: "AMapSearchErrorDomain", code: 1806)
+    )
+    XCTAssertTrue(message.contains("检查手机网络"))
+    XCTAssertTrue(message.contains("1806"))
+  }
 }

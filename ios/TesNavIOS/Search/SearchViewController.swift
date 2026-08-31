@@ -249,11 +249,46 @@ extension SearchViewController: AMapSearchDelegate {
   }
 
   func aMapSearchRequest(_ request: Any!, didFailWithError error: Error!) {
+    let details = error as NSError
     if request is AMapReGeocodeSearchRequest {
-      currentAddressLabel.text = "当前位置已获取，地址解析失败：\(error.localizedDescription)"
+      currentAddressLabel.text = AMapSearchFailureMessage.currentAddress(details)
     } else {
       candidates = []
+      currentAddressLabel.text = AMapSearchFailureMessage.search(details)
       tableView.reloadData()
+    }
+  }
+}
+
+enum AMapSearchFailureMessage {
+  static func currentAddress(_ error: NSError) -> String {
+    "当前位置已获取，\(reason(error))"
+  }
+
+  static func search(_ error: NSError) -> String {
+    "目的地搜索失败：\(reason(error))"
+  }
+
+  private static func reason(_ error: NSError) -> String {
+    switch error.code {
+    case 1002:
+      "高德 Key 非法或已过期（1002）"
+    case 1003:
+      "高德 Key 没有开通搜索服务（1003）"
+    case 1004:
+      "高德 Key 今日调用量已用完（1004）"
+    case 1005:
+      "高德请求过于频繁，请稍后重试（1005）"
+    case 1008:
+      "高德 iOS Key 与 Bundle ID com.garan.tesnav.ios 不匹配（1008）"
+    case 1009:
+      "高德 Key 绑定的平台不是 iOS（1009）"
+    case 1102, 1103, 1802:
+      "连接高德服务超时（\(error.code)）"
+    case 1804, 1805, 1806:
+      "无法连接高德服务，请检查手机网络（\(error.code)）"
+    default:
+      "高德服务错误 \(error.domain)/\(error.code)：\(error.localizedDescription)"
     }
   }
 }
