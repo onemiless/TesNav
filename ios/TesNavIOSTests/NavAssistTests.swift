@@ -113,4 +113,19 @@ final class NavAssistTests: XCTestCase {
       0x0A14FFFF
     )
   }
+
+  func testNavigationViewHandlesAMapCloseAndSettingsButtons() {
+    let controller = NavigationViewController(
+      destination: Destination(name: "Test", address: "", poiID: nil, latitude: 31.2, longitude: 121.4)
+    )
+    XCTAssertTrue(controller.responds(to: NSSelectorFromString("driveViewCloseButtonClicked:")))
+    XCTAssertTrue(controller.responds(to: NSSelectorFromString("driveViewMoreButtonClicked:")))
+  }
+
+  func testNavigationViewHasNoFullWidthStatusOverlay() {
+    let controller = NavigationViewController(
+      destination: Destination(name: "Test", address: "", poiID: nil, latitude: 31.2, longitude: 121.4)
+    )
+    XCTAssertNil(Mirror(reflecting: controller).children.first { $0.label == "statusLabel" })
+  }
 }

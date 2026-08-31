@@ -4,7 +4,6 @@ final class NavigationViewController: UIViewController {
   private let destination: Destination
   private let manager = AMapNaviDriveManager.sharedInstance()
   private let driveView = AMapNaviDriveView()
-  private let statusLabel = UILabel()
   private let speechButton = UIButton(type: .system)
   private var telemetry: NavigationTelemetry?
   private var started = false
@@ -31,10 +30,7 @@ final class NavigationViewController: UIViewController {
     super.viewDidAppear(animated)
     guard !started else { return }
     started = true
-    if manager.startGPSNavi() {
-      statusLabel.text = "实时导航中 · 语音播报已开启"
-    } else {
-      statusLabel.text = "实时导航启动失败，请重新规划路线"
+    if !manager.startGPSNavi() {
       showStartFailure()
     }
   }
@@ -52,6 +48,7 @@ final class NavigationViewController: UIViewController {
     manager.addDataRepresentative(driveView)
     manager.addEventListener(self)
     telemetry = NavigationTelemetry(manager: manager)
+    driveView.delegate = self
     driveView.autoZoomMapLevel = true
     driveView.showGreyAfterPass = true
     driveView.trackingMode = .carNorth
@@ -59,13 +56,6 @@ final class NavigationViewController: UIViewController {
 
   private func configureUI() {
     driveView.translatesAutoresizingMaskIntoConstraints = false
-    statusLabel.translatesAutoresizingMaskIntoConstraints = false
-    statusLabel.backgroundColor = UIColor.black.withAlphaComponent(0.62)
-    statusLabel.textColor = .white
-    statusLabel.font = .preferredFont(forTextStyle: .subheadline)
-    statusLabel.textAlignment = .center
-    statusLabel.numberOfLines = 2
-    statusLabel.text = "正在启动实时导航…"
 
     let stopButton = UIButton(type: .system)
     stopButton.translatesAutoresizingMaskIntoConstraints = false
@@ -88,17 +78,12 @@ final class NavigationViewController: UIViewController {
     controls.distribution = .fillEqually
 
     view.addSubview(driveView)
-    view.addSubview(statusLabel)
     view.addSubview(controls)
     NSLayoutConstraint.activate([
       driveView.topAnchor.constraint(equalTo: view.topAnchor),
       driveView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       driveView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       driveView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-      statusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-      statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-      statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-      statusLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 42),
       controls.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
       controls.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
       controls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
@@ -111,18 +96,39 @@ final class NavigationViewController: UIViewController {
     if speechPaused {
       manager.pauseNaviSpeech()
       speechButton.configuration?.title = "恢复语音"
-      statusLabel.text = "实时导航中 · 语音已暂停"
     } else {
       manager.resumeNaviSpeech()
       speechButton.configuration?.title = "静音"
-      statusLabel.text = "实时导航中 · 语音播报已开启"
     }
   }
 
   @objc private func stopNavigation() {
+    finishNavigation()
+  }
+
+  private func finishNavigation() {
     _ = manager.stopNavi()
     NavigationStateStore.shared.stop()
     navigationController?.popToRootViewController(animated: true)
+  }
+
+  private func showNavigationSettings() {
+    guard presentedViewController == nil else { return }
+    let sheet = UIAlertController(title: "导航设置", message: nil, preferredStyle: .actionSheet)
+    sheet.addAction(UIAlertAction(title: speechPaused ? "恢复语音" : "静音", style: .default) { [weak self] _ in
+      self?.toggleSpeech()
+    })
+    sheet.addAction(UIAlertAction(
+      title: driveView.autoZoomMapLevel ? "关闭自动缩放" : "开启自动缩放",
+      style: .default
+    ) { [weak self] _ in
+      guard let self else { return }
+      self.driveView.autoZoomMapLevel.toggle()
+    })
+    sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+    sheet.popoverPresentationController?.sourceView = driveView
+    sheet.popoverPresentationController?.sourceRect = CGRect(x: driveView.bounds.midX, y: driveView.bounds.midY, width: 1, height: 1)
+    present(sheet, animated: true)
   }
 
   private func showStartFailure() {
@@ -136,11 +142,21 @@ final class NavigationViewController: UIViewController {
 
 extension NavigationViewController: AMapNaviDriveManagerDelegate {
   func driveManager(onArrivedDestination driveManager: AMapNaviDriveManager) {
-    statusLabel.text = "已到达目的地"
+    title = "已到达目的地"
     speechButton.isEnabled = false
   }
 
   func driveManager(_ driveManager: AMapNaviDriveManager, onCalculateRouteFailure error: Error) {
-    statusLabel.text = "重新规划路线失败：\(error.localizedDescription)"
+    title = "路线重算失败"
+  }
+}
+
+extension NavigationViewController: AMapNaviDriveViewDelegate {
+  func driveViewCloseButtonClicked(_ driveView: AMapNaviDriveView) {
+    finishNavigation()
+  }
+
+  func driveViewMoreButtonClicked(_ driveView: AMapNaviDriveView) {
+    showNavigationSettings()
   }
 }

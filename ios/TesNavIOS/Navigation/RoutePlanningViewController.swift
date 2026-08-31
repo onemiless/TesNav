@@ -44,6 +44,7 @@ final class RoutePlanningViewController: UIViewController {
     driveView.autoZoomMapLevel = true
     driveView.showGreyAfterPass = true
     driveView.trackingMode = .carNorth
+    driveView.showUIElements = false
   }
 
   private func configureUI() {
