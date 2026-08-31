@@ -102,4 +102,15 @@ final class NavAssistTests: XCTestCase {
     XCTAssertTrue(message.contains("检查手机网络"))
     XCTAssertTrue(message.contains("1806"))
   }
+
+  func testDirectedBroadcastAddressUsesIPv4SubnetMask() {
+    XCTAssertEqual(
+      IPv4DirectedBroadcast.address(ip: 0xC0A866DF, netmask: 0xFFFFFF00),
+      0xC0A866FF
+    )
+    XCTAssertEqual(
+      IPv4DirectedBroadcast.address(ip: 0x0A140102, netmask: 0xFFFF0000),
+      0x0A14FFFF
+    )
+  }
 }

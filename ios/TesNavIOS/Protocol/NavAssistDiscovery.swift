@@ -110,6 +110,12 @@ private struct UdpDatagram {
   let payload: Data
 }
 
+enum IPv4DirectedBroadcast {
+  static func address(ip: UInt32, netmask: UInt32) -> UInt32 {
+    (ip & netmask) | ~netmask
+  }
+}
+
 private enum UdpBroadcast {
   static func exchange(_ request: Data) throws -> [UdpDatagram] {
     let descriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
@@ -121,20 +127,23 @@ private enum UdpBroadcast {
       throw NavAssistDiscoveryError.socket
     }
 
-    var target = sockaddr_in()
-    target.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    target.sin_family = sa_family_t(AF_INET)
-    target.sin_port = NavAssistProtocol.discoveryPort.bigEndian
-    guard inet_pton(AF_INET, "255.255.255.255", &target.sin_addr) == 1 else { throw NavAssistDiscoveryError.socket }
-
-    let sent = request.withUnsafeBytes { bytes in
-      withUnsafePointer(to: &target) { pointer in
-        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-          sendto(descriptor, bytes.baseAddress, bytes.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+    var successfulTargets = 0
+    for address in broadcastTargets() {
+      var target = sockaddr_in()
+      target.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+      target.sin_family = sa_family_t(AF_INET)
+      target.sin_port = NavAssistProtocol.discoveryPort.bigEndian
+      target.sin_addr = address
+      let sent = request.withUnsafeBytes { bytes in
+        withUnsafePointer(to: &target) { pointer in
+          pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            sendto(descriptor, bytes.baseAddress, bytes.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+          }
         }
       }
+      if sent == request.count { successfulTargets += 1 }
     }
-    guard sent == request.count else { throw NavAssistDiscoveryError.socket }
+    guard successfulTargets > 0 else { throw NavAssistDiscoveryError.socket }
 
     let deadline = Date().addingTimeInterval(0.75)
     var results: [UdpDatagram] = []
@@ -158,6 +167,37 @@ private enum UdpBroadcast {
       results.append(UdpDatagram(sourceHost: String(cString: text), payload: Data(buffer.prefix(count))))
     }
     return results
+  }
+
+  private static func broadcastTargets() -> [in_addr] {
+    var targets: [UInt32] = []
+    var interfaces: UnsafeMutablePointer<ifaddrs>?
+    if getifaddrs(&interfaces) == 0 {
+      defer { freeifaddrs(interfaces) }
+      var cursor = interfaces
+      while let current = cursor {
+        let interface = current.pointee
+        cursor = interface.ifa_next
+        let flags = interface.ifa_flags
+        guard flags & UInt32(IFF_UP) != 0,
+              flags & UInt32(IFF_BROADCAST) != 0,
+              flags & UInt32(IFF_LOOPBACK) == 0,
+              let addressPointer = interface.ifa_addr,
+              let netmaskPointer = interface.ifa_netmask,
+              addressPointer.pointee.sa_family == sa_family_t(AF_INET),
+              netmaskPointer.pointee.sa_family == sa_family_t(AF_INET) else { continue }
+        let address = addressPointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+          UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+        }
+        let netmask = netmaskPointer.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+          UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+        }
+        let broadcast = IPv4DirectedBroadcast.address(ip: address, netmask: netmask)
+        if broadcast != address { targets.append(broadcast.bigEndian) }
+      }
+    }
+    targets.append(INADDR_BROADCAST)
+    return Array(Set(targets)).map { in_addr(s_addr: $0) }
   }
 }
 
