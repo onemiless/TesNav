@@ -61,6 +61,29 @@ final class NavAssistTests: XCTestCase {
     XCTAssertEqual(snapshot.maneuverEventId, 0)
   }
 
+  func testGPSWeakFlagIsDiagnosticAndDoesNotDeactivateMatchedRealtimeRoute() {
+    var state = NavigationObservation()
+    state.mode = "realtime"
+    state.routeActive = true
+    state.routeMatched = true
+    state.gpsWeak = true
+    state.latitude = 31.2
+    state.longitude = 121.4
+    state.accuracyM = 18
+    state.bearingDeg = 90
+    state.speedKph = 25
+    state.locationObservedAtMs = 1_000
+    state.guidanceObservedAtMs = 1_000
+    state.currentStepIndex = 2
+    state.maneuver = "turn_right"
+    state.maneuverDistanceM = 120
+
+    let snapshot = NavAssistSession().nextSnapshot(from: state, nowMs: 1_100)
+    XCTAssertTrue(snapshot.gpsWeak)
+    XCTAssertTrue(snapshot.routeActive)
+    XCTAssertNotEqual(snapshot.maneuverEventId, 0)
+  }
+
   func testCanonicalJSONIsStableAndOmitsNil() throws {
     var state = NavigationObservation()
     state.routeRevision = 4

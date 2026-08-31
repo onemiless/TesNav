@@ -173,7 +173,6 @@ object NavAssistV2Mapper {
             !state.routeRecalculating &&
             (state.navigationMode == NavigationMode.REALTIME || state.navigationMode == NavigationMode.SIMULATION) &&
             state.routeMatched == true &&
-            !state.gpsSignalWeak &&
             location != null &&
             guidance != null
         val stepIndex = state.guidanceStepIndex ?: state.currentStepIndex

@@ -128,6 +128,21 @@ class NavAssistV2ProtocolTest {
     }
 
     @Test
+    fun `GPS weak flag is diagnostic and does not deactivate matched realtime route`() {
+        val snapshot = NavAssistV2Mapper.snapshot(
+            state = activeState().copy(gpsSignalWeak = true),
+            sessionId = "test-session",
+            sequence = 1L,
+            sourceWallTimeMs = 4_000L,
+            validForMs = 500L,
+        )
+
+        assertTrue(snapshot.gpsWeak)
+        assertTrue(snapshot.routeActive)
+        assertTrue(snapshot.maneuverEventId > 0L)
+    }
+
+    @Test
     fun `out of contract numeric and text fields are omitted or invalidate location`() {
         val snapshot = NavAssistV2Mapper.snapshot(
             state = activeState().copy(

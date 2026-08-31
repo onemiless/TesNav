@@ -73,7 +73,7 @@ final class NavAssistSession {
     let location = makeLocation(state)
     let guidance = makeGuidance(state)
     let sourceFresh = location != nil && guidance != nil
-    let active = state.mode == "realtime" && state.routeActive && state.routeMatched == true && !state.gpsWeak && sourceFresh
+    let active = state.mode == "realtime" && state.routeActive && state.routeMatched == true && sourceFresh
     let eventKey = active && state.maneuver != "none" && state.maneuver != "unknown"
       ? "\(sessionID):\(state.routeRevision):\(state.currentStepIndex ?? -1):\(state.maneuver)"
       : nil
