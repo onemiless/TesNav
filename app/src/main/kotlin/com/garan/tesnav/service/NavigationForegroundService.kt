@@ -12,6 +12,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.amap.api.location.AMapLocationClient
@@ -87,6 +88,8 @@ class NavigationForegroundService : Service() {
     private var routeRequestDestination: TeslaNavigationDestination? = null
     private var activeTeslaDestination: TeslaNavigationDestination? = null
     private var failedTeslaDestination: TeslaNavigationDestination? = null
+    private var lastNotificationContent: String? = null
+    private var lastNavAssistDiagnosticKey: String? = null
 
     inner class LocalBinder : Binder() {
         fun getService(): NavigationForegroundService = this@NavigationForegroundService
@@ -247,6 +250,7 @@ class NavigationForegroundService : Service() {
     private fun observeRuntime() {
         scope.launch {
             stateStore.state.collect { state ->
+                logNavAssistDiagnostics(state)
                 handleTeslaRouteProgress(state)
                 tryStartTeslaNavigation()
                 updateNotification()
@@ -282,6 +286,24 @@ class NavigationForegroundService : Service() {
         scope.launch {
             navAssistV2Status.collect { updateNotification() }
         }
+    }
+
+    private fun logNavAssistDiagnostics(state: NavigationState) {
+        val distanceBucket = state.nextTurnDistanceMeters?.div(10)?.times(10)
+        val key = "${state.navigationMode}:${state.routePlanned}:${state.routeMatched}:" +
+            "${state.maneuver}:${state.guidanceStepIndex}:$distanceBucket:${state.accuracy?.toInt()}"
+        if (key == lastNavAssistDiagnosticKey) return
+        lastNavAssistDiagnosticKey = key
+        val nowMs = System.currentTimeMillis()
+        val locationAgeMs = state.locationObservedAtMs?.let { (nowMs - it).coerceAtLeast(0L) }
+        val guidanceAgeMs = state.guidanceObservedAtMs?.let { (nowMs - it).coerceAtLeast(0L) }
+        Log.i(
+            NAVASSIST_DIAGNOSTIC_TAG,
+            "mode=${state.navigationMode} planned=${state.routePlanned} matched=${state.routeMatched} " +
+                "maneuver=${state.maneuver} step=${state.guidanceStepIndex} " +
+                "distanceM=${state.nextTurnDistanceMeters} accuracyM=${state.accuracy} " +
+                "locationAgeMs=$locationAgeMs guidanceAgeMs=$guidanceAgeMs",
+        )
     }
 
     private fun startHomeAssistant() {
@@ -369,6 +391,8 @@ class NavigationForegroundService : Service() {
         if (!::stateStore.isInitialized || !::exporter.isInitialized) return
         val content = "${stateStore.state.value.navigationMode.name} · Comma ${commaConnectionState.value.name} · " +
             "C3XL ${navAssistV2Status.value.name}"
+        if (content == lastNotificationContent) return
+        lastNotificationContent = content
         getSystemService(NotificationManager::class.java)?.notify(
             NOTIFICATION_ID,
             buildNotification(content),
@@ -439,6 +463,7 @@ class NavigationForegroundService : Service() {
     private fun pendingFlags(): Int = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
     companion object {
+        private const val NAVASSIST_DIAGNOSTIC_TAG = "TesNavNavState"
         private const val ACTION_STOP_SERVICE = "com.garan.tesnav.action.STOP_RUNTIME"
         private const val CHANNEL_ID = "tesnav_navigation_runtime"
         private const val NOTIFICATION_ID = 1001

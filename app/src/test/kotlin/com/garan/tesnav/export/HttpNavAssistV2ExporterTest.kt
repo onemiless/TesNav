@@ -46,7 +46,7 @@ class HttpNavAssistV2ExporterTest {
     }
 
     @Test
-    fun `HTTP failure clears discovered endpoint and automatically discovers again`() {
+    fun `one HTTP failure retries the authenticated endpoint before rediscovery`() {
         val discoveries = AtomicInteger()
         val posts = AtomicInteger()
         val online = CountDownLatch(1)
@@ -69,9 +69,42 @@ class HttpNavAssistV2ExporterTest {
             exporter.start()
             assertTrue(online.await(3, TimeUnit.SECONDS))
             await { exporter.status.value == NavAssistV2ConnectionStatus.ONLINE }
-            assertTrue(discoveries.get() >= 2)
+            assertEquals(1, discoveries.get())
             assertTrue(posts.get() >= 2)
             assertEquals("http://192.168.53.232:7766/v3/snapshot", exporter.resolvedEndpoint.value)
+        } finally {
+            exporter.stop()
+        }
+    }
+
+    @Test
+    fun `repeated HTTP failures rediscover after a network change`() {
+        val discoveries = AtomicInteger()
+        val posts = AtomicInteger()
+        val online = CountDownLatch(1)
+        val exporter = exporter(
+            discovery = NavAssistV2EndpointDiscovery {
+                val suffix = if (discoveries.incrementAndGet() == 1) 232 else 233
+                NavAssistV2DiscoveryResult.Found("192.168.53.$suffix", deviceId)
+            },
+            client = object : NavAssistV2HttpClient {
+                override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) {
+                    posts.incrementAndGet()
+                    if (endpoint.host.endsWith(".232")) error("old network")
+                    online.countDown()
+                }
+
+                override fun close() = Unit
+            },
+        )
+
+        try {
+            exporter.start()
+            assertTrue(online.await(3, TimeUnit.SECONDS))
+            await { exporter.status.value == NavAssistV2ConnectionStatus.ONLINE }
+            assertTrue(discoveries.get() >= 2)
+            assertTrue(posts.get() >= 3)
+            assertEquals("http://192.168.53.233:7766/v3/snapshot", exporter.resolvedEndpoint.value)
         } finally {
             exporter.stop()
         }

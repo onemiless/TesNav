@@ -1,6 +1,9 @@
 package com.garan.tesnav.export
 
 import com.garan.tesnav.model.NavigationState
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,10 +38,10 @@ interface NavAssistV2HttpClient {
 
 internal class OkHttpNavAssistV2Client : NavAssistV2HttpClient {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(2, TimeUnit.SECONDS)
-        .readTimeout(2, TimeUnit.SECONDS)
-        .writeTimeout(2, TimeUnit.SECONDS)
-        .callTimeout(3, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(8, TimeUnit.SECONDS)
         .followRedirects(false)
         .followSslRedirects(false)
         .build()
@@ -51,7 +54,13 @@ internal class OkHttpNavAssistV2Client : NavAssistV2HttpClient {
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("HTTP ${response.code}")
+            if (!response.isSuccessful) {
+                val reason = response.body?.string()
+                    ?.let(HTTP_REASON_PATTERN::find)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                error("HTTP ${response.code}${reason?.let { " ($it)" } ?: ""}")
+            }
         }
     }
 
@@ -63,6 +72,7 @@ internal class OkHttpNavAssistV2Client : NavAssistV2HttpClient {
 
     private companion object {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        val HTTP_REASON_PATTERN = Regex("\\\"reason\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"")
     }
 }
 
@@ -127,6 +137,7 @@ internal class HttpNavAssistV2Exporter(
         val intervalMs = config.intervalMs.coerceAtLeast(NavAssistV2Protocol.MIN_INTERVAL_MS)
         publisherJob = scope.launch {
             var endpoint = explicitEndpoint
+            var consecutivePostFailures = 0
             if (endpoint != null) publishDiscovered(endpoint)
             while (isActive && running) {
                 if (endpoint == null) {
@@ -142,13 +153,19 @@ internal class HttpNavAssistV2Exporter(
                 when (postLatest(endpoint)) {
                     PostResult.NO_STATE -> Unit
                     PostResult.SUCCESS -> {
+                        consecutivePostFailures = 0
                         mutableLastError.value = null
                         mutableConnectionState.value = ExportConnectionState.CONNECTED
                         mutableStatus.value = NavAssistV2ConnectionStatus.ONLINE
                     }
                     PostResult.FAILURE -> {
-                        if (config.usesDiscovery()) {
+                        consecutivePostFailures += 1
+                        // A single missed response is common on phone hotspots. Keep the authenticated
+                        // endpoint for one direct retry; rediscover after repeated failures so a Wi-Fi
+                        // change can still move the session to the C3XL's new address.
+                        if (config.usesDiscovery() && consecutivePostFailures >= POST_FAILURES_BEFORE_REDISCOVERY) {
                             endpoint = null
+                            consecutivePostFailures = 0
                             mutableResolvedEndpoint.value = null
                         }
                     }
@@ -222,7 +239,7 @@ internal class HttpNavAssistV2Exporter(
         }.fold(
             onSuccess = { PostResult.SUCCESS },
             onFailure = { error ->
-                mutableLastError.value = "NavAssist HTTP 发送失败：${error.javaClass.simpleName}"
+                mutableLastError.value = describeHttpFailure(endpoint.url, error)
                 mutableConnectionState.value = ExportConnectionState.ERROR
                 mutableStatus.value = NavAssistV2ConnectionStatus.ERROR
                 PostResult.FAILURE
@@ -245,11 +262,22 @@ internal class HttpNavAssistV2Exporter(
             .build()
     }.getOrNull()
 
+    private fun describeHttpFailure(endpoint: HttpUrl, error: Throwable): String {
+        val target = "${endpoint.host}:${endpoint.port}"
+        return when (error) {
+            is SocketTimeoutException -> "NavAssist HTTP 超时：$target（热点延迟或 C3XL 繁忙）"
+            is ConnectException -> "NavAssist 无法连接：$target"
+            is UnknownHostException -> "NavAssist 地址无效：${endpoint.host}"
+            else -> "NavAssist HTTP 发送失败：${error.message ?: error.javaClass.simpleName}"
+        }
+    }
+
     private enum class PostResult { NO_STATE, SUCCESS, FAILURE }
 
     private companion object {
         const val NANOS_PER_MILLISECOND = 1_000_000L
         const val DEFAULT_DISCOVERY_RETRY_MS = 1_000L
+        const val POST_FAILURES_BEFORE_REDISCOVERY = 2
     }
 }
 
