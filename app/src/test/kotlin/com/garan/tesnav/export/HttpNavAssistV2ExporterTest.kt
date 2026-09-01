@@ -78,6 +78,41 @@ class HttpNavAssistV2ExporterTest {
     }
 
     @Test
+    fun `navigation start can force rediscovery of a previously healthy endpoint`() {
+        val discoveries = AtomicInteger()
+        val posts = AtomicInteger()
+        val firstOnline = CountDownLatch(1)
+        val secondOnline = CountDownLatch(1)
+        val exporter = exporter(
+            discovery = NavAssistV2EndpointDiscovery {
+                val count = discoveries.incrementAndGet()
+                NavAssistV2DiscoveryResult.Found("192.168.53.${231 + count}", deviceId)
+            },
+            client = object : NavAssistV2HttpClient {
+                override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) {
+                    when (posts.incrementAndGet()) {
+                        1 -> firstOnline.countDown()
+                        2 -> secondOnline.countDown()
+                    }
+                }
+
+                override fun close() = Unit
+            },
+        )
+
+        try {
+            exporter.start()
+            assertTrue(firstOnline.await(2, TimeUnit.SECONDS))
+            exporter.requestRediscovery()
+            assertTrue(secondOnline.await(2, TimeUnit.SECONDS))
+            await { discoveries.get() >= 2 }
+            assertEquals("http://192.168.53.233:7766/v3/snapshot", exporter.resolvedEndpoint.value)
+        } finally {
+            exporter.stop()
+        }
+    }
+
+    @Test
     fun `multiple authenticated devices never select an endpoint`() {
         val discoveryCalled = CountDownLatch(1)
         val exporter = exporter(

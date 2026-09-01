@@ -102,7 +102,7 @@ lower_hex(HMAC-SHA256(UTF8(raw_http_body), UTF8(NAV_ASSIST_V2_TOKEN)))
 
 接收端还应拒绝重复或倒退的 sequence、已经关闭的 session、旧 routeRevision，以及验签失败的消息。丢包只会形成 sequence gap，不应导致接收端等待补包。
 
-`routeActive=true` 只会在实时或模拟导航运行中、路线已规划、非重算/结束状态、GPS 未报告弱信号、`routeMatched=true`，且完整的 `location` 与 `guidance` 对象都存在时产生。任一前置观测缺失时发送 `routeActive=false`，并将 `maneuverEventId` 归零。location 对象存在时，坐标、精度、方向、速度和观测时间均为必填；无效或非有限数值会使整个 location 缺省。
+`routeActive=true` 只会在实时导航运行中、路线已规划、非重算/结束状态、`routeMatched=true`，且完整的 `location` 与 `guidance` 对象都存在时产生。GPS weak 只作为诊断字段，不单独关闭已匹配路线。任一必要观测缺失时发送 `routeActive=false`，并将 `maneuverEventId` 归零。location 对象存在时，坐标、精度、方向、速度和观测时间均为必填；无效或非有限数值会使整个 location 缺省。
 
 C3XL 的实车控制 gate 只接受 Android/iOS 的 `realtime` 快照；`simulation` 即使 `routeActive=true` 也只可用于协议诊断，不能形成纵向目标。
 

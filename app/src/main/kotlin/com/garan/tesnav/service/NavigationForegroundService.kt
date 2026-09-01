@@ -148,8 +148,12 @@ class NavigationForegroundService : Service() {
 
     fun planRoute(latitude: Double, longitude: Double): Boolean = repository.planRoute(latitude, longitude)
     fun selectRoute(routeId: Int): Boolean = repository.selectRoute(routeId)
-    fun startRealtime(): Boolean = repository.startRealtime()
-    fun startSimulation(): Boolean = repository.startSimulation()
+    fun startRealtime(): Boolean = repository.startRealtime().also { accepted ->
+        if (accepted && ::navAssistV2Exporter.isInitialized) navAssistV2Exporter.requestRediscovery()
+    }
+    fun startSimulation(): Boolean = repository.startSimulation().also { accepted ->
+        if (accepted && ::navAssistV2Exporter.isInitialized) navAssistV2Exporter.requestRediscovery()
+    }
     fun pauseSimulation(): Boolean = repository.pauseSimulation()
     fun resumeSimulation(): Boolean = repository.resumeSimulation()
     fun setSpeechEnabled(enabled: Boolean): Boolean = repository.setSpeechEnabled(enabled)

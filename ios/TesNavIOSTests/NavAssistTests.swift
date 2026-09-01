@@ -219,4 +219,9 @@ final class NavAssistTests: XCTestCase {
     )
     XCTAssertNil(Mirror(reflecting: controller).children.first { $0.label == "statusLabel" })
   }
+
+  func testNavigationStartCanForceImmediateC3Rediscovery() {
+    NavAssistClient.shared.requestRediscovery()
+    XCTAssertEqual(NavAssistClient.shared.status().connection, .scanning)
+  }
 }

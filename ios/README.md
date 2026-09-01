@@ -13,6 +13,7 @@
 - 高德 GPS 弱标记仅用于诊断；路线仍由位置精度、数据新鲜度和匹配状态约束；
 - Keychain 持久化 P-256 App 身份；
 - UDP 7765 自动发现并认证 C3XL，HTTP 7766 `/v3/snapshot` 签名发送；
+- 每次开始实时或模拟导航都会丢弃缓存的局域网地址并重新发现 C3XL，适应 Wi-Fi/IP 切换；
 - 无共享 Token，App 内显示 App Key ID、tici Device ID、地址和连接状态，并可忘记配对。
 
 ## 本地配置

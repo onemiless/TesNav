@@ -14,6 +14,8 @@ must remain equivalent:
   sequence numbers, stable maneuver event IDs, and 500 ms snapshot lifetime;
 - the same maneuver vocabulary, including directional ramp, exit, merge, turn,
   U-turn, and roundabout events;
+- navigation start forces both platforms to discard a cached LAN endpoint and
+  rediscover the C3XL at its current Wi-Fi address before continuing uploads;
 - the same lane-action vocabulary and the same invalid recommendation values
   (`15`, `22`, and `255`);
 - GPS weakness is diagnostic and simulation is never control-active.

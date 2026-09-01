@@ -67,10 +67,18 @@ final class NavAssistClient {
 
   func clearPairing() {
     discovery.clearPairing()
+    requestRediscovery(detail: "已忘记配对，正在重新扫描")
+  }
+
+  func requestRediscovery() {
+    requestRediscovery(detail: "导航开始，正在重新发现当前 C3XL 地址")
+  }
+
+  private func requestRediscovery(detail: String) {
     lock.lock()
     discoveryResetRequested = true
     lock.unlock()
-    publish(.scanning, endpoint: nil, deviceID: nil, detail: "已忘记配对，正在重新扫描")
+    publish(.scanning, endpoint: nil, deviceID: nil, detail: detail)
   }
 
   func hasPairing() -> Bool { discovery.hasPairing() }

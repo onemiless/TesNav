@@ -39,6 +39,7 @@ final class NavigationViewController: UIViewController {
     super.viewDidAppear(animated)
     guard !started else { return }
     started = true
+    NavAssistClient.shared.requestRediscovery()
     let accepted = startMode == .realtime ? manager.startGPSNavi() : manager.startEmulatorNavi()
     if !accepted {
       NavigationStateStore.shared.navigationStartFailed()

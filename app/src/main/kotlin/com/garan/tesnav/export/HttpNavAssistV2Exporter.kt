@@ -93,6 +93,7 @@ internal class HttpNavAssistV2Exporter(
     private val session by lazy { NavAssistV2Session(validForMs = config.validForMs) }
 
     @Volatile private var running = false
+    @Volatile private var rediscoveryRequested = false
     private var publisherJob: Job? = null
 
     override fun start() {
@@ -129,6 +130,11 @@ internal class HttpNavAssistV2Exporter(
             var endpoint = explicitEndpoint
             if (endpoint != null) publishDiscovered(endpoint)
             while (isActive && running) {
+                if (rediscoveryRequested && config.usesDiscovery()) {
+                    rediscoveryRequested = false
+                    endpoint = null
+                    mutableResolvedEndpoint.value = null
+                }
                 if (endpoint == null) {
                     endpoint = discoverEndpoint()
                     if (!isActive || !running) break
@@ -161,6 +167,7 @@ internal class HttpNavAssistV2Exporter(
 
     override fun stop() {
         running = false
+        rediscoveryRequested = false
         publisherJob?.cancel()
         publisherJob = null
         httpClient.close()
@@ -172,6 +179,15 @@ internal class HttpNavAssistV2Exporter(
         } else {
             NavAssistV2ConnectionStatus.UNCONFIGURED
         }
+    }
+
+    /** Drops a cached LAN address so navigation starts against the C3XL's current Wi-Fi address. */
+    internal fun requestRediscovery() {
+        if (!running || !config.usesDiscovery()) return
+        rediscoveryRequested = true
+        mutableResolvedEndpoint.value = null
+        mutableConnectionState.value = ExportConnectionState.STARTING
+        mutableStatus.value = NavAssistV2ConnectionStatus.SCANNING
     }
 
     private fun discoverEndpoint(): ResolvedNavAssistEndpoint? {
