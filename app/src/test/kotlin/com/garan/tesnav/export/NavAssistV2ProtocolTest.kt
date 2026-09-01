@@ -103,6 +103,21 @@ class NavAssistV2ProtocolTest {
     }
 
     @Test
+    fun `simulation is visible as a mode but never exported as a control-active route`() {
+        val snapshot = NavAssistV2Mapper.snapshot(
+            state = activeState().copy(navigationMode = NavigationMode.SIMULATION),
+            sessionId = "test-session",
+            sequence = 1L,
+            sourceWallTimeMs = 4_000L,
+            validForMs = 500L,
+        )
+
+        assertEquals("simulation", snapshot.navigationMode)
+        assertFalse(snapshot.routeActive)
+        assertEquals(0L, snapshot.maneuverEventId)
+    }
+
+    @Test
     fun `active route requires matched complete location and guidance`() {
         val incompleteLocation = NavAssistV2Mapper.snapshot(
             state = activeState().copy(latitude = null),

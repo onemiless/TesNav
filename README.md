@@ -6,11 +6,12 @@ TesNav 提供 Android 和 iOS 手机端导航应用。两端使用高德地图�
 
 ## 主要功能
 
-- 在高德地图上长按选择目的地并规划路线
-- 在主地图页输入地址或地点搜索目的地，并在地图上二次确认后规划路线
+- Android 可在高德地图上长按选择目的地；Android/iOS 都可输入地址或地点、选择模糊搜索结果并规划路线
 - 显示当前位置的逆地理编码地址；尚无定位或地址服务失败时显示明确状态
-- 支持实时导航、模拟导航、暂停、继续和结束导航
-- 通过前台服务在后台维持导航状态和网络连接
+- 两端都支持最多三条路线、实时/模拟导航、暂停/继续模拟、结束导航、内置语音和静音/恢复
+- Android 通过前台服务，iOS 通过后台定位/音频模式维持导航和 NavAssist 连接
+- 两端都使用 P-256 身份自动发现并配对 tici，支持查看连接状态和忘记配对，不需要共享 Token
+- 两端使用相同的 v3 maneuver、匝道/出口、车道动作、推荐车道、GPS 诊断和回调时间语义
 - 汇总位置、车速、剩余距离、剩余时间、道路、车道、摄像头、限速和交通状态
 - 通过 WebSocket 定时向 Comma 端发送最新导航快照
 - 路线规划完成后发送经过简化的全量路线坐标
@@ -61,10 +62,9 @@ HOME_ASSISTANT_TOKEN=xxxx
 
 ```
 
-可选的 NavAssist v2 手机到 C3XL 单向 HTTP 出口默认关闭；只有同时配置
-`NAV_ASSIST_V2_URL` 与 `NAV_ASSIST_V2_TOKEN` 才会启动。协议、HMAC、字段新鲜度和
-兼容性约定见 [`docs/NAVASSIST_V2.md`](docs/NAVASSIST_V2.md)。原 WebSocket v1
-配置和默认行为不受影响。
+当前 NavAssist v3 默认使用 UDP 7765 自动发现和 TCP 7766 签名快照，不需要 URL
+或共享 Token。Android/iOS 能力契约见
+[`docs/PLATFORM_PARITY.md`](docs/PLATFORM_PARITY.md)。
 
 ## 构建与安装
 
@@ -90,7 +90,7 @@ app/build/outputs/apk/debug/app-debug.apk
 也可以直接使用 Android Studio 打开项目并运行到 Android 设备。
 
 iOS 工程位于 [`ios/`](ios/README.md)，使用 XcodeGen 与 CocoaPods 生成，支持
-模糊地址搜索、当前地址、多路线选择、实时语音导航、后台播报和 C3XL v3
+模糊地址搜索、当前地址、多路线、实时/模拟语音导航、后台播报和 tici v3
 自动发现。iOS 高德 Key 必须绑定 Bundle ID `com.garan.tesnav.ios`。
 
 首次启动时需要授予定位、后台定位和通知等权限。进入地图后长按目标位置，再点击“导航到这里”即可规划路线。

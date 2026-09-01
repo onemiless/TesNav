@@ -32,7 +32,7 @@ final class NavigationTelemetry: NSObject, AMapNaviDriveDataRepresentable, AMapN
 
   func driveManager(_ driveManager: AMapNaviDriveManager, update naviLocation: AMapNaviLocation?) {
     guard let location = naviLocation, let point = location.coordinate else { return }
-    let observedMs = UInt64(max(0, location.timestamp.timeIntervalSince1970 * 1_000))
+    let observedMs = NavigationObservationClock.milliseconds()
     store.update {
       $0.latitude = Double(point.latitude)
       $0.longitude = Double(point.longitude)
@@ -50,12 +50,12 @@ final class NavigationTelemetry: NSObject, AMapNaviDriveDataRepresentable, AMapN
 
   func driveManager(_ driveManager: AMapNaviDriveManager, update naviInfo: AMapNaviInfo?) {
     guard let info = naviInfo else { return }
-    let nowMs = UInt64(Date().timeIntervalSince1970 * 1_000)
+    let nowMs = NavigationObservationClock.milliseconds()
     let segmentIndex = info.currentSegmentIndex
     let linkIndex = info.currentLinkIndex
     let link = routeLink(manager: driveManager, segment: segmentIndex, link: linkIndex)
     let nextLink = routeLink(manager: driveManager, segment: segmentIndex + 1, link: 0)
-    let maneuver = maneuverWireValue(icon: info.iconType, formWay: nextLink?.formWay ?? link?.formWay)
+    let maneuver = AMapManeuverMapper.wireValue(icon: info.iconType, formWay: nextLink?.formWay ?? link?.formWay)
     store.update {
       $0.guidanceObservedAtMs = nowMs
       $0.currentStepIndex = segmentIndex
@@ -79,11 +79,11 @@ final class NavigationTelemetry: NSObject, AMapNaviDriveDataRepresentable, AMapN
     let back = parseLaneValues(laneBackInfo)
     let selected = parseLaneValues(laneSelectInfo)
     guard !back.isEmpty, back.count == selected.count else { return }
-    let nowMs = UInt64(Date().timeIntervalSince1970 * 1_000)
+    let nowMs = NavigationObservationClock.milliseconds()
     store.update {
       $0.laneObservedAtMs = nowMs
       $0.lanes = zip(back, selected).enumerated().map { index, pair in
-        let recommended = pair.1 != 255
+        let recommended = AMapLaneActionMapper.isRecommended(pair.1)
         return LaneObservation(
           index: index,
           allowedActions: AMapLaneActionMapper.actions(pair.0),
@@ -96,7 +96,7 @@ final class NavigationTelemetry: NSObject, AMapNaviDriveDataRepresentable, AMapN
 
   func driveManagerHideLaneInfo(_ driveManager: AMapNaviDriveManager) {
     store.update {
-      $0.laneObservedAtMs = UInt64(Date().timeIntervalSince1970 * 1_000)
+      $0.laneObservedAtMs = NavigationObservationClock.milliseconds()
       $0.lanes = []
     }
   }
@@ -130,7 +130,16 @@ final class NavigationTelemetry: NSObject, AMapNaviDriveDataRepresentable, AMapN
     text?.split(separator: "|").compactMap { Int($0) } ?? []
   }
 
-  private func maneuverWireValue(icon: AMapNaviIconType, formWay: AMapNaviFormWay?) -> String {
+}
+
+enum NavigationObservationClock {
+  static func milliseconds(_ date: Date = Date()) -> UInt64 {
+    UInt64(max(0, date.timeIntervalSince1970 * 1_000))
+  }
+}
+
+enum AMapManeuverMapper {
+  static func wireValue(icon: AMapNaviIconType, formWay: AMapNaviFormWay?) -> String {
     let direction: String
     switch icon {
     case .left: direction = "turn_left"
@@ -142,8 +151,8 @@ final class NavigationTelemetry: NSObject, AMapNaviDriveDataRepresentable, AMapN
     case .leftAndAround: direction = "u_turn_left"
     case .uTurnRight: direction = "u_turn_right"
     case .straight, .specialContinue: direction = "straight"
-    case .mergeLeft: direction = "keep_left"
-    case .mergeRight: direction = "keep_right"
+    case .mergeLeft: direction = "merge_left"
+    case .mergeRight: direction = "merge_right"
     case .enterRoundabout, .outRoundabout, .entryRingLeft, .entryRingRight, .entryRingContinue, .entryRingUTurn,
          .entryLeftRingLeft, .entryLeftRingRight, .entryLeftRingContinue, .entryLeftRingUTurn:
       direction = "roundabout"
@@ -164,6 +173,8 @@ final class NavigationTelemetry: NSObject, AMapNaviDriveDataRepresentable, AMapN
 }
 
 enum AMapLaneActionMapper {
+  static func isRecommended(_ value: Int) -> Bool { !actions(value).isEmpty }
+
   static func actions(_ value: Int) -> [String] {
     switch value {
     case 0: ["STRAIGHT"]
@@ -177,15 +188,19 @@ enum AMapLaneActionMapper {
     case 8: ["RIGHT_U_TURN"]
     case 9: ["STRAIGHT", "LEFT_U_TURN"]
     case 10: ["STRAIGHT", "RIGHT_U_TURN"]
-    case 11: ["LEFT", "LEFT_U_TURN"]
+    case 11, 14: ["LEFT", "LEFT_U_TURN"]
     case 12: ["RIGHT", "RIGHT_U_TURN"]
+    case 13: ["STRAIGHT"]
     case 16: ["STRAIGHT", "LEFT", "LEFT_U_TURN"]
     case 17: ["RIGHT", "LEFT_U_TURN"]
-    case 18: ["LEFT", "LEFT_U_TURN", "RIGHT"]
+    case 18: ["LEFT", "RIGHT", "LEFT_U_TURN"]
     case 19: ["STRAIGHT", "RIGHT", "LEFT_U_TURN"]
     case 20: ["LEFT", "RIGHT_U_TURN"]
     case 21: ["BUS"]
     case 23: ["VARIABLE"]
+    case 24: ["DEDICATED"]
+    case 25: ["TIDAL"]
+    case 15, 22, 255: []
     default: ["UNKNOWN"]
     }
   }

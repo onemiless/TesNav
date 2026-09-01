@@ -171,7 +171,7 @@ object NavAssistV2Mapper {
         }
         val routeActive = state.routePlanned &&
             !state.routeRecalculating &&
-            (state.navigationMode == NavigationMode.REALTIME || state.navigationMode == NavigationMode.SIMULATION) &&
+            state.navigationMode == NavigationMode.REALTIME &&
             state.routeMatched == true &&
             location != null &&
             guidance != null

@@ -114,4 +114,5 @@ data class NavigationState(
     @Transient val routeRecalculating: Boolean = false,
     @Transient val routeChoices: List<RouteChoice> = emptyList(),
     @Transient val selectedRouteId: Int? = null,
+    @Transient val speechEnabled: Boolean = true,
 )

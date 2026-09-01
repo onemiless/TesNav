@@ -133,7 +133,12 @@ class NavigationForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_SERVICE) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
             stopSelf()
             return START_NOT_STICKY
         }
@@ -147,6 +152,7 @@ class NavigationForegroundService : Service() {
     fun startSimulation(): Boolean = repository.startSimulation()
     fun pauseSimulation(): Boolean = repository.pauseSimulation()
     fun resumeSimulation(): Boolean = repository.resumeSimulation()
+    fun setSpeechEnabled(enabled: Boolean): Boolean = repository.setSpeechEnabled(enabled)
     fun stopNavigation() = repository.stopNavigation()
     fun currentPath(): AMapNaviPath? = repository.currentPath()
 

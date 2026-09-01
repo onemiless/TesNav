@@ -33,6 +33,10 @@ final class NavAssistDiscovery {
     self.pairingStore = pairingStore
   }
 
+  func clearPairing() { pairingStore.clear() }
+
+  func hasPairing() -> Bool { pairingStore.load() != nil }
+
   func discover() throws -> NavAssistEndpoint {
     let nonce = randomNonce()
     let requestMaterial = "navassist_discovery_request\n3\n\(nonce)\n\(identity.keyID)\n\(identity.publicKeyText)"

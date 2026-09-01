@@ -30,6 +30,7 @@ final class NavAssistClient {
   private let discovery: NavAssistDiscovery
   private let lock = NSLock()
   private var running = false
+  private var discoveryResetRequested = false
   private var currentStatus: NavAssistClientStatus
 
   private init() {
@@ -64,10 +65,24 @@ final class NavAssistClient {
     return currentStatus
   }
 
+  func clearPairing() {
+    discovery.clearPairing()
+    lock.lock()
+    discoveryResetRequested = true
+    lock.unlock()
+    publish(.scanning, endpoint: nil, deviceID: nil, detail: "已忘记配对，正在重新扫描")
+  }
+
+  func hasPairing() -> Bool { discovery.hasPairing() }
+
   private func runLoop() {
     var endpoint: NavAssistEndpoint?
     var failures = 0
     while isRunning {
+      if consumeDiscoveryReset() {
+        endpoint = nil
+        failures = 0
+      }
       if endpoint == nil {
         publish(.scanning, endpoint: nil, deviceID: nil, detail: "正在扫描同一局域网内的 C3XL")
         do {
@@ -135,6 +150,14 @@ final class NavAssistClient {
     lock.lock()
     defer { lock.unlock() }
     return running
+  }
+
+  private func consumeDiscoveryReset() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    let requested = discoveryResetRequested
+    discoveryResetRequested = false
+    return requested
   }
 
   private func publish(

@@ -1,6 +1,7 @@
 package com.garan.tesnav
 
 import android.app.Activity
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -8,6 +9,7 @@ import android.content.ServiceConnection
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.view.Gravity
@@ -20,6 +22,7 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.window.OnBackInvokedDispatcher
 import com.amap.api.maps.CameraUpdateFactory
 import com.amap.api.navi.AMapNaviView
 import com.amap.api.navi.AMapNaviViewOptions
@@ -49,6 +52,7 @@ class NavigationActivity : Activity() {
     private lateinit var endNavigationButton: Button
     private lateinit var realtimeButton: Button
     private lateinit var simulationButton: Button
+    private lateinit var speechButton: Button
     private lateinit var settingsButton: ImageButton
     private lateinit var debugButton: ImageButton
     private lateinit var overviewButton: OverviewButtonView
@@ -88,6 +92,11 @@ class NavigationActivity : Activity() {
         naviView.setLazyOverviewButtonView(overviewButton)
         configureMap()
         configureActions()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
+                stopNavigationAndFinish()
+            }
+        }
     }
 
     private fun createViewOptions() = AMapNaviViewOptions().apply {
@@ -112,6 +121,7 @@ class NavigationActivity : Activity() {
         endNavigationButton = actionButton("结束导航")
         realtimeButton = actionButton("开始导航")
         simulationButton = actionButton("模拟导航")
+        speechButton = actionButton("静音")
         routeChoiceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -126,6 +136,9 @@ class NavigationActivity : Activity() {
             addView(endNavigationButton, LinearLayout.LayoutParams(dp(180), ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(realtimeButton, LinearLayout.LayoutParams(dp(180), ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(simulationButton, LinearLayout.LayoutParams(dp(180), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = dp(12)
+            })
+            addView(speechButton, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = dp(12)
             })
         }
@@ -194,6 +207,10 @@ class NavigationActivity : Activity() {
             }
             if (!succeeded) toast("模拟导航操作失败")
         }
+        speechButton.setOnClickListener {
+            val service = runtimeService ?: return@setOnClickListener
+            if (!service.setSpeechEnabled(!currentState.speechEnabled)) toast("语音设置失败")
+        }
         settingsButton.setOnClickListener {
             runtimeService?.let { service ->
                 SettingsDialog(
@@ -241,6 +258,7 @@ class NavigationActivity : Activity() {
             NavigationMode.IDLE -> {
                 routeActions.visibility = View.GONE
                 routeChoiceScroll.visibility = View.GONE
+                speechButton.visibility = View.GONE
                 if (oldMode != null && oldMode != NavigationMode.IDLE) finish()
                 if (routeRequestSent && !state.errorMessage.isNullOrBlank()) {
                     toast(state.errorMessage)
@@ -257,6 +275,7 @@ class NavigationActivity : Activity() {
                     text = "模拟导航"
                     visibility = View.VISIBLE
                 }
+                speechButton.visibility = View.GONE
                 if (oldMode != NavigationMode.ROUTE_PLANNED) {
                     naviView.setShowMode(AMapNaviViewShowMode.SHOW_MODE_DISPLAY_OVERVIEW)
                 }
@@ -267,6 +286,10 @@ class NavigationActivity : Activity() {
                 endNavigationButton.visibility = View.VISIBLE
                 realtimeButton.visibility = View.GONE
                 simulationButton.visibility = View.GONE
+                speechButton.apply {
+                    text = if (state.speechEnabled) "静音" else "恢复语音"
+                    visibility = View.VISIBLE
+                }
                 if (oldMode != NavigationMode.REALTIME) enterNavigationView()
             }
             NavigationMode.SIMULATION -> {
@@ -276,6 +299,10 @@ class NavigationActivity : Activity() {
                 realtimeButton.visibility = View.GONE
                 simulationButton.apply {
                     text = if (state.simulationPaused) "继续" else "暂停"
+                    visibility = View.VISIBLE
+                }
+                speechButton.apply {
+                    text = if (state.speechEnabled) "静音" else "恢复语音"
                     visibility = View.VISIBLE
                 }
                 if (oldMode != NavigationMode.SIMULATION) enterNavigationView()
@@ -379,10 +406,15 @@ class NavigationActivity : Activity() {
         super.onSaveInstanceState(outState)
     }
 
-    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-    override fun onBackPressed() {
+    private fun stopNavigationAndFinish() {
         runtimeService?.stopNavigation()
         finish()
+    }
+
+    @SuppressLint("GestureBackNavigation")
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onBackPressed() {
+        stopNavigationAndFinish()
     }
 
     override fun onDestroy() {

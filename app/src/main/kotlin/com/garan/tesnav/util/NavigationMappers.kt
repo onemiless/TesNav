@@ -7,23 +7,30 @@ import com.garan.tesnav.model.TrafficStatus
 
 object NavigationMappers {
     /** Maps documented AMap IconType integer values to the shared NavAssist vocabulary. */
-    fun maneuver(raw: Int?): NavigationManeuver = when (raw) {
-        0, 1 -> NavigationManeuver.NONE
-        2 -> NavigationManeuver.TURN_LEFT
-        3 -> NavigationManeuver.TURN_RIGHT
-        4 -> NavigationManeuver.SLIGHT_LEFT
-        5 -> NavigationManeuver.SLIGHT_RIGHT
-        6 -> NavigationManeuver.SHARP_LEFT
-        7 -> NavigationManeuver.SHARP_RIGHT
-        8 -> NavigationManeuver.U_TURN_LEFT
-        9, 20 -> NavigationManeuver.STRAIGHT
-        11, 12, 17, 18, in 21..28 -> NavigationManeuver.ROUNDABOUT
-        15 -> NavigationManeuver.DESTINATION
-        19 -> NavigationManeuver.U_TURN_RIGHT
-        65 -> NavigationManeuver.MERGE_LEFT
-        66 -> NavigationManeuver.MERGE_RIGHT
-        10, 13, 14, 16 -> NavigationManeuver.NONE
-        else -> NavigationManeuver.UNKNOWN
+    fun maneuver(raw: Int?, roadType: Int? = null): NavigationManeuver {
+        val direction = when (raw) {
+            0, 1 -> NavigationManeuver.NONE
+            2 -> NavigationManeuver.TURN_LEFT
+            3 -> NavigationManeuver.TURN_RIGHT
+            4 -> NavigationManeuver.SLIGHT_LEFT
+            5 -> NavigationManeuver.SLIGHT_RIGHT
+            6 -> NavigationManeuver.SHARP_LEFT
+            7 -> NavigationManeuver.SHARP_RIGHT
+            8 -> NavigationManeuver.U_TURN_LEFT
+            9, 20 -> NavigationManeuver.STRAIGHT
+            11, 12, 17, 18, in 21..28 -> NavigationManeuver.ROUNDABOUT
+            15 -> NavigationManeuver.DESTINATION
+            19 -> NavigationManeuver.U_TURN_RIGHT
+            65 -> NavigationManeuver.MERGE_LEFT
+            66 -> NavigationManeuver.MERGE_RIGHT
+            10, 13, 14, 16 -> NavigationManeuver.NONE
+            else -> NavigationManeuver.UNKNOWN
+        }
+        return when {
+            roadType == ROAD_TYPE_EXIT -> direction.exitVariant()
+            roadType in RAMP_ROAD_TYPES -> direction.rampVariant()
+            else -> direction
+        }
     }
 
     fun maneuverWireValue(maneuver: NavigationManeuver): String = when (maneuver) {
@@ -57,7 +64,7 @@ object NavigationMappers {
     fun laneRecommendedActions(laneCount: Int, frontLane: IntArray?): List<List<LaneAction>> =
         List(laneCount.coerceAtLeast(0)) { index ->
             when (val raw = frontLane?.getOrNull(index)) {
-                null, 15, 255 -> emptyList()
+                null, 15, 22, 255 -> emptyList()
                 else -> laneActions(raw)
             }
         }
@@ -143,4 +150,22 @@ object NavigationMappers {
     private val VALID_ROAD_TYPES = setOf(
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 53, 56, 58,
     )
+    private val RAMP_ROAD_TYPES = setOf(6, 8, 56, 58)
+    private const val ROAD_TYPE_EXIT = 9
+
+    private fun NavigationManeuver.exitVariant(): NavigationManeuver = when (this) {
+        NavigationManeuver.SLIGHT_LEFT, NavigationManeuver.TURN_LEFT, NavigationManeuver.SHARP_LEFT,
+        NavigationManeuver.U_TURN_LEFT, NavigationManeuver.MERGE_LEFT, NavigationManeuver.KEEP_LEFT -> NavigationManeuver.EXIT_LEFT
+        NavigationManeuver.SLIGHT_RIGHT, NavigationManeuver.TURN_RIGHT, NavigationManeuver.SHARP_RIGHT,
+        NavigationManeuver.U_TURN_RIGHT, NavigationManeuver.MERGE_RIGHT, NavigationManeuver.KEEP_RIGHT -> NavigationManeuver.EXIT_RIGHT
+        else -> this
+    }
+
+    private fun NavigationManeuver.rampVariant(): NavigationManeuver = when (this) {
+        NavigationManeuver.SLIGHT_LEFT, NavigationManeuver.TURN_LEFT, NavigationManeuver.SHARP_LEFT,
+        NavigationManeuver.U_TURN_LEFT, NavigationManeuver.MERGE_LEFT, NavigationManeuver.KEEP_LEFT -> NavigationManeuver.RAMP_LEFT
+        NavigationManeuver.SLIGHT_RIGHT, NavigationManeuver.TURN_RIGHT, NavigationManeuver.SHARP_RIGHT,
+        NavigationManeuver.U_TURN_RIGHT, NavigationManeuver.MERGE_RIGHT, NavigationManeuver.KEEP_RIGHT -> NavigationManeuver.RAMP_RIGHT
+        else -> this
+    }
 }

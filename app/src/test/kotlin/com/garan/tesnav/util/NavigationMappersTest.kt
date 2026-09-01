@@ -24,6 +24,15 @@ class NavigationMappersTest {
     }
 
     @Test
+    fun `directional maneuvers use road type to preserve ramp and exit semantics`() {
+        assertEquals(NavigationManeuver.RAMP_LEFT, NavigationMappers.maneuver(2, roadType = 6))
+        assertEquals(NavigationManeuver.RAMP_RIGHT, NavigationMappers.maneuver(5, roadType = 8))
+        assertEquals(NavigationManeuver.EXIT_LEFT, NavigationMappers.maneuver(4, roadType = 9))
+        assertEquals(NavigationManeuver.EXIT_RIGHT, NavigationMappers.maneuver(3, roadType = 9))
+        assertEquals(NavigationManeuver.TURN_LEFT, NavigationMappers.maneuver(2, roadType = 15))
+    }
+
+    @Test
     fun `road metadata accepts only documented values`() {
         assertEquals(0, NavigationMappers.validRoadClass(0))
         assertEquals(10, NavigationMappers.validRoadClass(10))
@@ -85,5 +94,6 @@ class NavigationMappersTest {
         assertEquals(emptyList<LaneAction>(), NavigationMappers.navAssistV2LaneActions(15))
         assertEquals(emptyList<LaneAction>(), NavigationMappers.navAssistV2LaneActions(22))
         assertEquals(emptyList<LaneAction>(), NavigationMappers.navAssistV2LaneActions(255))
+        assertEquals(emptyList<LaneAction>(), NavigationMappers.laneRecommendedActions(1, intArrayOf(22)).single())
     }
 }

@@ -41,7 +41,7 @@ class NavigationRepository(
     fun initialize(): Result<Unit> = runCatching {
         navi = AMapNavi.getInstance(appContext).also {
             it.addAMapNaviListener(this)
-            it.setUseInnerVoice(false)
+            it.setUseInnerVoice(true)
             it.setTrafficStatusUpdateEnabled(true)
             it.setTrafficInfoUpdateEnabled(true)
             it.setCameraInfoUpdateEnabled(true)
@@ -145,6 +145,18 @@ class NavigationRepository(
 
     fun resumeSimulation(): Boolean = controlSimulation(paused = false)
 
+    fun setSpeechEnabled(enabled: Boolean): Boolean {
+        val engine = navi ?: return false
+        return runCatching {
+            if (enabled) engine.startSpeak() else engine.stopSpeak()
+            update { copy(speechEnabled = enabled, errorMessage = null) }
+            true
+        }.getOrElse { error ->
+            update { copy(errorMessage = "语音设置失败：${error.message}") }
+            false
+        }
+    }
+
     private fun controlSimulation(paused: Boolean): Boolean {
         val engine = navi ?: return false
         if (stateStore.state.value.navigationMode != NavigationMode.SIMULATION) return false
@@ -166,7 +178,8 @@ class NavigationRepository(
         requestedNavigationMode = mode
         val started = navi?.startNavi(type) == true
         if (started) {
-            update { copy(navigationMode = mode, simulationPaused = false, errorMessage = null) }
+            navi?.startSpeak()
+            update { copy(navigationMode = mode, simulationPaused = false, speechEnabled = true, errorMessage = null) }
         } else {
             requestedNavigationMode = null
             update { copy(errorMessage = "导航启动请求未被 SDK 接受") }
@@ -247,6 +260,9 @@ class NavigationRepository(
         val currentLink = stepIndex?.let { step ->
             linkIndex?.let { link -> navi?.naviPath?.steps?.getOrNull(step)?.links?.getOrNull(link) }
         }
+        val maneuverRoadType = stepIndex?.let { step ->
+            navi?.naviPath?.steps?.getOrNull(step + 1)?.links?.firstOrNull()?.roadType
+        } ?: currentLink?.roadType
         update {
             copy(
                 currentRoad = info.currentRoadName?.takeIf(String::isNotBlank),
@@ -257,7 +273,7 @@ class NavigationRepository(
                 routeRemainTimeSeconds = info.pathRetainTime,
                 remainingTrafficLightCount = info.routeRemainLightCount.takeIf { it >= 0 },
                 guidanceObservedAtMs = observedAtMs,
-                maneuver = NavigationMappers.maneuver(info.iconType),
+                maneuver = NavigationMappers.maneuver(info.iconType, maneuverRoadType),
                 guidanceStepIndex = stepIndex,
                 currentRoadClass = NavigationMappers.validRoadClass(currentLink?.roadClass),
                 currentRoadType = NavigationMappers.validRoadType(currentLink?.roadType),

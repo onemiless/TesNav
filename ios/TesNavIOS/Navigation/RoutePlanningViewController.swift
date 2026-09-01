@@ -6,6 +6,7 @@ final class RoutePlanningViewController: UIViewController {
   private let driveView = AMapNaviDriveView()
   private let tableView = UITableView(frame: .zero, style: .insetGrouped)
   private let startButton = UIButton(type: .system)
+  private let simulationButton = UIButton(type: .system)
   private let statusLabel = UILabel()
   private var routes: [(id: Int, route: AMapNaviRoute)] = []
   private var selectedRouteID: Int?
@@ -68,10 +69,24 @@ final class RoutePlanningViewController: UIViewController {
     startButton.isEnabled = false
     startButton.addTarget(self, action: #selector(startNavigation), for: .touchUpInside)
 
+    var simulationConfiguration = UIButton.Configuration.filled()
+    simulationConfiguration.title = "模拟导航"
+    simulationConfiguration.cornerStyle = .large
+    simulationConfiguration.baseBackgroundColor = .systemIndigo
+    simulationButton.configuration = simulationConfiguration
+    simulationButton.isEnabled = false
+    simulationButton.addTarget(self, action: #selector(startSimulation), for: .touchUpInside)
+
+    let startControls = UIStackView(arrangedSubviews: [startButton, simulationButton])
+    startControls.translatesAutoresizingMaskIntoConstraints = false
+    startControls.axis = .horizontal
+    startControls.spacing = 12
+    startControls.distribution = .fillEqually
+
     view.addSubview(driveView)
     view.addSubview(tableView)
     view.addSubview(statusLabel)
-    view.addSubview(startButton)
+    view.addSubview(startControls)
     NSLayoutConstraint.activate([
       driveView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
       driveView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -83,11 +98,11 @@ final class RoutePlanningViewController: UIViewController {
       statusLabel.topAnchor.constraint(equalTo: tableView.bottomAnchor, constant: 4),
       statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
       statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-      startButton.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
-      startButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-      startButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-      startButton.heightAnchor.constraint(equalToConstant: 50),
-      startButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+      startControls.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
+      startControls.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+      startControls.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+      startControls.heightAnchor.constraint(equalToConstant: 50),
+      startControls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
     ])
   }
 
@@ -108,12 +123,27 @@ final class RoutePlanningViewController: UIViewController {
   }
 
   @objc private func startNavigation() {
+    beginNavigation(mode: .realtime)
+  }
+
+  @objc private func startSimulation() {
+    beginNavigation(mode: .simulation)
+  }
+
+  private func beginNavigation(mode: NavigationStartMode) {
     guard let routeID = selectedRouteID, manager.selectNaviRoute(withRouteID: routeID) else {
       statusLabel.text = "无法选择当前路线"
       return
     }
-    NavigationStateStore.shared.startRealtime()
-    navigationController?.pushViewController(NavigationViewController(destination: destination), animated: true)
+    if mode == .realtime {
+      NavigationStateStore.shared.startRealtime()
+    } else {
+      NavigationStateStore.shared.startSimulation()
+    }
+    navigationController?.pushViewController(
+      NavigationViewController(destination: destination, startMode: mode),
+      animated: true
+    )
   }
 
   private func refreshRoutes() {
@@ -126,6 +156,7 @@ final class RoutePlanningViewController: UIViewController {
     if let selectedRouteID { _ = manager.selectNaviRoute(withRouteID: selectedRouteID) }
     NavigationStateStore.shared.routeCalculated()
     startButton.isEnabled = selectedRouteID != nil
+    simulationButton.isEnabled = selectedRouteID != nil
     statusLabel.text = routes.isEmpty ? "没有可用路线" : "已返回 \(routes.count) 条路线，请选择后开始导航"
     tableView.reloadData()
   }

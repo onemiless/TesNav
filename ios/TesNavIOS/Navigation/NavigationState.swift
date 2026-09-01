@@ -81,6 +81,21 @@ final class NavigationStateStore {
     }
   }
 
+  func startSimulation() {
+    update {
+      $0.mode = "simulation"
+      $0.routeActive = false
+      $0.arrived = false
+    }
+  }
+
+  func navigationStartFailed() {
+    update {
+      $0.mode = "route_planned"
+      $0.routeActive = false
+    }
+  }
+
   func stop() {
     update { $0 = NavigationObservation(routeRevision: $0.routeRevision) }
   }

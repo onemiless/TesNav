@@ -1,5 +1,10 @@
 # NavAssist v2（Android P0）
 
+> 历史文档：这里记录已经退役的 Android-only HMAC v2 设计，不再是当前配置
+> 指南。当前 Android/iOS 都使用 P-256 身份、UDP 7765 自动发现和 TCP 7766
+> `/v3/snapshot`；不需要共享 Token。当前跨平台契约见
+> [`PLATFORM_PARITY.md`](PLATFORM_PARITY.md)。
+
 NavAssist v2 是独立于现有 WebSocket v1 的、默认关闭的单向导航数据出口。它只发送手机端的导航观测，不接收也不生成车辆控制命令。
 
 共享 JSON Schema 位于 [`protocol/navassist-v2.schema.json`](../protocol/navassist-v2.schema.json)。接收端应启用严格 schema 校验并拒绝未知字段。

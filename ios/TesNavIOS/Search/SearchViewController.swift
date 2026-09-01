@@ -22,6 +22,12 @@ final class SearchViewController: UIViewController {
     locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
     locationManager.distanceFilter = 10
     configureUI()
+    navigationItem.rightBarButtonItem = UIBarButtonItem(
+      title: "设置",
+      style: .plain,
+      target: self,
+      action: #selector(showSettings)
+    )
     observeConnection()
     requestLocation()
 
@@ -120,7 +126,8 @@ final class SearchViewController: UIViewController {
     let request = AMapInputTipsSearchRequest()
     request.keywords = keyword
     request.cityLimit = false
-    if let coordinate = latestLocation?.coordinate {
+    if let location = latestLocation {
+      let coordinate = amapCoordinate(location)
       request.location = String(format: "%.6f,%.6f", coordinate.longitude, coordinate.latitude)
     }
     searchAPI.aMapInputTipsSearch(request)
@@ -134,7 +141,8 @@ final class SearchViewController: UIViewController {
     request.offset = 8
     request.page = 1
     request.sortrule = latestLocation == nil ? 1 : 0
-    if let coordinate = latestLocation?.coordinate {
+    if let location = latestLocation {
+      let coordinate = amapCoordinate(location)
       request.location = AMapGeoPoint.location(withLatitude: coordinate.latitude, longitude: coordinate.longitude)
     }
     searchAPI.aMapPOIKeywordsSearch(request)
@@ -144,7 +152,8 @@ final class SearchViewController: UIViewController {
     if let previous = lastReverseGeocodeLocation, location.distance(from: previous) < 30 { return }
     lastReverseGeocodeLocation = location
     let request = AMapReGeocodeSearchRequest()
-    request.location = AMapGeoPoint.location(withLatitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
+    let coordinate = amapCoordinate(location)
+    request.location = AMapGeoPoint.location(withLatitude: coordinate.latitude, longitude: coordinate.longitude)
     request.requireExtension = true
     searchAPI.aMapReGoecodeSearch(request)
   }
@@ -170,6 +179,24 @@ final class SearchViewController: UIViewController {
       latitude: Double(point.latitude),
       longitude: Double(point.longitude)
     )
+  }
+
+  private func amapCoordinate(_ location: CLLocation) -> CLLocationCoordinate2D {
+    AMapCoordinateConvert(location.coordinate, .GPS)
+  }
+
+  @objc private func showSettings() {
+    let status = NavAssistClient.shared.status()
+    let message = "连接：\(status.detail)\n设备：\(status.deviceID.map { String($0.prefix(8)) + "…" } ?? "未发现")\nApp：\(status.appKeyID.prefix(8))…"
+    let sheet = UIAlertController(title: "NavAssist 设置", message: message, preferredStyle: .actionSheet)
+    let forget = UIAlertAction(title: "忘记已配对设备", style: .destructive) { _ in
+      NavAssistClient.shared.clearPairing()
+    }
+    forget.isEnabled = NavAssistClient.shared.hasPairing()
+    sheet.addAction(forget)
+    sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+    sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
+    present(sheet, animated: true)
   }
 }
 
@@ -215,10 +242,11 @@ extension SearchViewController: CLLocationManagerDelegate {
   func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
     guard let location = locations.last, location.horizontalAccuracy >= 0 else { return }
     latestLocation = location
+    let coordinate = amapCoordinate(location)
     currentAddressLabel.text = String(
       format: "当前位置：%.6f, %.6f（精度 %.0f 米）",
-      location.coordinate.latitude,
-      location.coordinate.longitude,
+      coordinate.latitude,
+      coordinate.longitude,
       location.horizontalAccuracy
     )
     reverseGeocode(location)

@@ -107,7 +107,75 @@ final class NavAssistTests: XCTestCase {
     XCTAssertEqual(AMapLaneActionMapper.actions(0), ["STRAIGHT"])
     XCTAssertEqual(AMapLaneActionMapper.actions(7), ["STRAIGHT", "LEFT", "RIGHT"])
     XCTAssertEqual(AMapLaneActionMapper.actions(21), ["BUS"])
-    XCTAssertEqual(AMapLaneActionMapper.actions(255), ["UNKNOWN"])
+    XCTAssertEqual(AMapLaneActionMapper.actions(255), [])
+  }
+
+  func testAMapLaneActionsMatchAndroidCompositeAndInvalidVocabulary() {
+    XCTAssertEqual(AMapLaneActionMapper.actions(13), ["STRAIGHT"])
+    XCTAssertEqual(AMapLaneActionMapper.actions(14), ["LEFT", "LEFT_U_TURN"])
+    XCTAssertEqual(AMapLaneActionMapper.actions(18), ["LEFT", "RIGHT", "LEFT_U_TURN"])
+    XCTAssertEqual(AMapLaneActionMapper.actions(24), ["DEDICATED"])
+    XCTAssertEqual(AMapLaneActionMapper.actions(25), ["TIDAL"])
+    XCTAssertEqual(AMapLaneActionMapper.actions(15), [])
+    XCTAssertEqual(AMapLaneActionMapper.actions(22), [])
+    XCTAssertEqual(AMapLaneActionMapper.actions(255), [])
+    XCTAssertFalse(AMapLaneActionMapper.isRecommended(15))
+    XCTAssertFalse(AMapLaneActionMapper.isRecommended(22))
+    XCTAssertFalse(AMapLaneActionMapper.isRecommended(255))
+    XCTAssertTrue(AMapLaneActionMapper.isRecommended(3))
+  }
+
+  func testAMapManeuversMatchAndroidRampExitAndMergeVocabulary() {
+    XCTAssertEqual(AMapManeuverMapper.wireValue(icon: .left, formWay: .ramp), "ramp_left")
+    XCTAssertEqual(AMapManeuverMapper.wireValue(icon: .right, formWay: .exit), "exit_right")
+    XCTAssertEqual(AMapManeuverMapper.wireValue(icon: .mergeLeft, formWay: nil), "merge_left")
+    XCTAssertEqual(AMapManeuverMapper.wireValue(icon: .mergeRight, formWay: nil), "merge_right")
+  }
+
+  func testSimulationModeNeverBecomesControlActiveSnapshot() {
+    var state = NavigationObservation()
+    state.mode = "simulation"
+    state.routeActive = true
+    state.routeMatched = true
+    state.latitude = 31.2
+    state.longitude = 121.4
+    state.accuracyM = 4
+    state.bearingDeg = 90
+    state.speedKph = 25
+    state.locationObservedAtMs = 1_000
+    state.guidanceObservedAtMs = 1_000
+    state.currentStepIndex = 2
+    state.maneuver = "turn_right"
+
+    let snapshot = NavAssistSession().nextSnapshot(from: state, nowMs: 1_100)
+
+    XCTAssertEqual(snapshot.navigationMode, "simulation")
+    XCTAssertFalse(snapshot.routeActive)
+    XCTAssertEqual(snapshot.maneuverEventId, 0)
+  }
+
+  func testIOSObservationClockUsesCallbackReceiptTimeLikeAndroid() {
+    XCTAssertEqual(
+      NavigationObservationClock.milliseconds(Date(timeIntervalSince1970: 1.25)),
+      1_250
+    )
+  }
+
+  func testPairingStoreCanForgetPinnedDeviceLikeAndroidSettings() throws {
+    let suite = "NavAssistTests.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = NavAssistPairingStore(defaults: defaults)
+    let publicText = P256.Signing.PrivateKey().publicKey.derRepresentation.base64URLEncodedString()
+    let device = PinnedNavAssistDevice(
+      deviceID: try XCTUnwrap(NavAssistIdentity.keyID(for: publicText)),
+      publicKey: publicText
+    )
+
+    XCTAssertTrue(store.pin(device))
+    XCTAssertEqual(store.load(), device)
+    store.clear()
+    XCTAssertNil(store.load())
   }
 
   func testAMapSCodeMismatchExplainsRequiredIOSBundleBinding() {

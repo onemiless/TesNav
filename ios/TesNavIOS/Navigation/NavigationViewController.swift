@@ -1,16 +1,25 @@
 import UIKit
 
+enum NavigationStartMode {
+  case realtime
+  case simulation
+}
+
 final class NavigationViewController: UIViewController {
   private let destination: Destination
+  private let startMode: NavigationStartMode
   private let manager = AMapNaviDriveManager.sharedInstance()
   private let driveView = AMapNaviDriveView()
   private let speechButton = UIButton(type: .system)
   private var telemetry: NavigationTelemetry?
   private var started = false
   private var speechPaused = false
+  private var simulationPaused = false
+  private let simulationButton = UIButton(type: .system)
 
-  init(destination: Destination) {
+  init(destination: Destination, startMode: NavigationStartMode = .realtime) {
     self.destination = destination
+    self.startMode = startMode
     super.init(nibName: nil, bundle: nil)
   }
 
@@ -30,7 +39,9 @@ final class NavigationViewController: UIViewController {
     super.viewDidAppear(animated)
     guard !started else { return }
     started = true
-    if !manager.startGPSNavi() {
+    let accepted = startMode == .realtime ? manager.startGPSNavi() : manager.startEmulatorNavi()
+    if !accepted {
+      NavigationStateStore.shared.navigationStartFailed()
       showStartFailure()
     }
   }
@@ -43,6 +54,7 @@ final class NavigationViewController: UIViewController {
   private func configureNavigation() {
     manager.isUseInternalTTS = true
     manager.isUseTextPlay = true
+    manager.resumeNaviSpeech()
     manager.allowsBackgroundLocationUpdates = true
     manager.pausesLocationUpdatesAutomatically = false
     manager.addDataRepresentative(driveView)
@@ -71,7 +83,15 @@ final class NavigationViewController: UIViewController {
     speechButton.configuration = speechConfiguration
     speechButton.addTarget(self, action: #selector(toggleSpeech), for: .touchUpInside)
 
-    let controls = UIStackView(arrangedSubviews: [speechButton, stopButton])
+    simulationButton.translatesAutoresizingMaskIntoConstraints = false
+    var simulationConfiguration = UIButton.Configuration.filled()
+    simulationConfiguration.title = "暂停"
+    simulationConfiguration.baseBackgroundColor = .systemIndigo
+    simulationButton.configuration = simulationConfiguration
+    simulationButton.addTarget(self, action: #selector(toggleSimulation), for: .touchUpInside)
+    simulationButton.isHidden = startMode != .simulation
+
+    let controls = UIStackView(arrangedSubviews: [speechButton, simulationButton, stopButton])
     controls.translatesAutoresizingMaskIntoConstraints = false
     controls.axis = .horizontal
     controls.spacing = 12
@@ -99,6 +119,18 @@ final class NavigationViewController: UIViewController {
     } else {
       manager.resumeNaviSpeech()
       speechButton.configuration?.title = "静音"
+    }
+  }
+
+  @objc private func toggleSimulation() {
+    guard startMode == .simulation else { return }
+    simulationPaused.toggle()
+    if simulationPaused {
+      manager.pauseNavi()
+      simulationButton.configuration?.title = "继续"
+    } else {
+      manager.resumeNavi()
+      simulationButton.configuration?.title = "暂停"
     }
   }
 
