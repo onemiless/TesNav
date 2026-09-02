@@ -7,7 +7,7 @@
 
 NavAssist v2 是独立于现有 WebSocket v1 的、默认关闭的单向导航数据出口。它只发送手机端的导航观测，不接收也不生成车辆控制命令。
 
-共享 JSON Schema 位于 [`protocol/navassist-v2.schema.json`](../protocol/navassist-v2.schema.json)。接收端应启用严格 schema 校验并拒绝未知字段。
+当前共享 JSON Schema 位于 [`protocol/navassist-v3.schema.json`](../protocol/navassist-v3.schema.json)。接收端应启用严格 schema 校验并拒绝未知字段；下文其余 v2/HMAC 内容仅用于历史追溯。
 
 ## 启用方式与 App 内配置
 
