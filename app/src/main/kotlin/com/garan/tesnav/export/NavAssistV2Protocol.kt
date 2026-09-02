@@ -23,7 +23,7 @@ object NavAssistV2Protocol {
     const val COORDINATE_SYSTEM = "gcj02"
     const val ENDPOINT_PATH = "/v3/snapshot"
     const val MIN_INTERVAL_MS = 200L
-    const val DEFAULT_VALID_FOR_MS = 500L
+    const val DEFAULT_VALID_FOR_MS = 1_200L
     const val MIN_VALID_FOR_MS = 100L
     const val MAX_VALID_FOR_MS = 2_000L
     const val SIGNATURE_HEADER = NavAssistV3Auth.SIGNATURE_HEADER

@@ -40,6 +40,28 @@ final class NavAssistTests: XCTestCase {
     XCTAssertTrue(snapshot.routeActive)
     XCTAssertNotEqual(snapshot.maneuverEventId, 0)
     XCTAssertEqual(snapshot.guidance?.maneuver, "turn_right")
+    XCTAssertEqual(snapshot.validForMs, 1_200)
+  }
+
+  func testAutomaticReroutePreservesRealtimeNavigationMode() {
+    let store = NavigationStateStore.shared
+    defer { store.stop() }
+    store.stop()
+    store.routeCalculated()
+    store.startRealtime()
+
+    let revisionBeforeReroute = store.read().routeRevision
+    store.routeCalculated()
+    let rerouted = store.read()
+
+    XCTAssertEqual(rerouted.mode, "realtime")
+    XCTAssertFalse(rerouted.routeActive)
+    XCTAssertEqual(rerouted.routeRevision, revisionBeforeReroute + 1)
+  }
+
+  func testPublishCadenceDoesNotAddHTTPLatencyToTheInterval() {
+    XCTAssertEqual(NavAssistPublishCadence.remainingDelay(after: 0.05), 0.15, accuracy: 0.0001)
+    XCTAssertEqual(NavAssistPublishCadence.remainingDelay(after: 0.25), 0, accuracy: 0.0001)
   }
 
   func testSnapshotFailsClosedWithoutGuidance() {

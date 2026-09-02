@@ -6,7 +6,7 @@ enum NavAssistProtocol {
   static let endpointPath = "/v3/snapshot"
   static let snapshotPort: UInt16 = 7766
   static let discoveryPort: UInt16 = 7765
-  static let validForMs: UInt64 = 500
+  static let validForMs: UInt64 = 1_200
 }
 
 struct NavAssistLocation: Encodable {

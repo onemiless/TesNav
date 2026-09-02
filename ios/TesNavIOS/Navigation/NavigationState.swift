@@ -66,10 +66,25 @@ final class NavigationStateStore {
   func routeCalculated() {
     update {
       $0.routeRevision &+= 1
-      $0.mode = "route_planned"
+      if $0.mode != "realtime" && $0.mode != "simulation" {
+        $0.mode = "route_planned"
+      }
       $0.routeActive = false
+      $0.routeMatched = nil
       $0.routeRecalculating = false
       $0.arrived = false
+      $0.guidanceObservedAtMs = nil
+      $0.laneObservedAtMs = nil
+      $0.currentStepIndex = nil
+      $0.currentLinkIndex = nil
+      $0.currentPointIndex = nil
+      $0.maneuver = "none"
+      $0.maneuverDistanceM = nil
+      $0.currentRoad = nil
+      $0.nextRoad = nil
+      $0.roadClass = nil
+      $0.roadType = nil
+      $0.lanes = []
     }
   }
 

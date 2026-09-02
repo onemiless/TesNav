@@ -14,6 +14,12 @@ import org.junit.Test
 
 class NavAssistV2ProtocolTest {
     @Test
+    fun `default snapshot lifetime tolerates normal LAN jitter`() {
+        assertEquals(1_200L, NavAssistV2Protocol.DEFAULT_VALID_FOR_MS)
+        assertEquals(1_200L, NavAssistV2ExportConfig(baseUrl = "").validForMs)
+    }
+
+    @Test
     fun `canonical JSON recursively sorts keys and omits nulls`() {
         val value = CanonicalFixture(
             z = 2,

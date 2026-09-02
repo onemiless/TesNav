@@ -107,6 +107,7 @@ final class NavAssistClient {
       }
 
       guard let activeEndpoint = endpoint else { continue }
+      let postStartedAt = ProcessInfo.processInfo.systemUptime
       do {
         try post(to: activeEndpoint)
         failures = 0
@@ -121,7 +122,8 @@ final class NavAssistClient {
         publish(.error, endpoint: activeEndpoint.url.absoluteString, deviceID: activeEndpoint.deviceID, detail: "发送失败：\(error.localizedDescription)")
         if failures >= 3 { endpoint = nil }
       }
-      Thread.sleep(forTimeInterval: 0.2)
+      let elapsed = ProcessInfo.processInfo.systemUptime - postStartedAt
+      Thread.sleep(forTimeInterval: NavAssistPublishCadence.remainingDelay(after: elapsed))
     }
   }
 
@@ -187,5 +189,13 @@ final class NavAssistClient {
     DispatchQueue.main.async {
       NotificationCenter.default.post(name: .navAssistStatusChanged, object: status)
     }
+  }
+}
+
+enum NavAssistPublishCadence {
+  static let interval: TimeInterval = 0.2
+
+  static func remainingDelay(after elapsed: TimeInterval) -> TimeInterval {
+    max(0, interval - max(0, elapsed))
   }
 }
