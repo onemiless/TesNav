@@ -84,45 +84,24 @@ final class NavAssistClient {
   func hasPairing() -> Bool { discovery.hasPairing() }
 
   private func runLoop() {
-    var endpoint: NavAssistEndpoint?
-    var failures = 0
     while isRunning {
-      if consumeDiscoveryReset() {
-        endpoint = nil
-        failures = 0
-      }
-      if endpoint == nil {
-        publish(.scanning, endpoint: nil, deviceID: nil, detail: "正在扫描同一局域网内的 C3XL")
-        do {
-          endpoint = try discovery.discover()
-          failures = 0
-          if let endpoint {
-            publish(.discovered, endpoint: endpoint.url.absoluteString, deviceID: endpoint.deviceID, detail: "已认证，正在连接")
-          }
-        } catch {
-          publish(.scanning, endpoint: nil, deviceID: nil, detail: error.localizedDescription)
-          Thread.sleep(forTimeInterval: 0.25)
-          continue
-        }
-      }
-
-      guard let activeEndpoint = endpoint else { continue }
-      let postStartedAt = ProcessInfo.processInfo.systemUptime
+      _ = consumeDiscoveryReset()
+      let sendStartedAt = ProcessInfo.processInfo.systemUptime
       do {
-        try post(to: activeEndpoint)
-        failures = 0
-        publish(
-          .online,
-          endpoint: activeEndpoint.url.absoluteString,
-          deviceID: activeEndpoint.deviceID,
-          detail: "C3XL 在线，无需 Token"
-        )
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1_000)
+        let snapshot = session.nextSnapshot(from: stateStore.read(), nowMs: nowMs)
+        let body = try CanonicalJSON.encode(snapshot)
+        if let host = try UnauthenticatedNavAssistUDP.send(
+          snapshot: body, sessionID: snapshot.sessionId, sequence: snapshot.sequence
+        ) {
+          publish(.online, endpoint: "udp://\(host):4213", deviceID: host, detail: "C3XL UDP 在线，无需鉴权")
+        } else {
+          publish(.scanning, endpoint: nil, deviceID: nil, detail: "正在广播查找同一局域网内的 C3XL")
+        }
       } catch {
-        failures += 1
-        publish(.error, endpoint: activeEndpoint.url.absoluteString, deviceID: activeEndpoint.deviceID, detail: "发送失败：\(error.localizedDescription)")
-        if failures >= 3 { endpoint = nil }
+        publish(.error, endpoint: nil, deviceID: nil, detail: "UDP 发送失败：\(error.localizedDescription)")
       }
-      let elapsed = ProcessInfo.processInfo.systemUptime - postStartedAt
+      let elapsed = ProcessInfo.processInfo.systemUptime - sendStartedAt
       Thread.sleep(forTimeInterval: NavAssistPublishCadence.remainingDelay(after: elapsed))
     }
   }

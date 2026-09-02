@@ -14,6 +14,44 @@ class HttpNavAssistV2ExporterTest {
     private val deviceId = "d".repeat(32)
 
     @Test
+    fun `runtime UDP mode broadcasts canonical snapshots without discovery or credentials`() {
+        val sent = CountDownLatch(1)
+        val discoveryCalls = AtomicInteger()
+        val exporter = HttpNavAssistV2Exporter(
+            config = NavAssistV2ExportConfig(baseUrl = ""),
+            stateProvider = { NavigationState() },
+            identity = identity,
+            endpointDiscovery = NavAssistV2EndpointDiscovery {
+                discoveryCalls.incrementAndGet()
+                NavAssistV2DiscoveryResult.NotFound
+            },
+            pinnedDeviceProvider = { null },
+            httpClient = object : NavAssistV2HttpClient {
+                override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) =
+                    error("UDP mode must not POST")
+                override fun close() = Unit
+            },
+            useUnauthenticatedUdp = true,
+            udpClient = NavAssistV3UdpClient { body, sessionId, sequence ->
+                assertTrue(body.decodeToString().contains("\"sessionId\":\"$sessionId\""))
+                assertTrue(sequence > 0)
+                sent.countDown()
+                "192.168.102.187"
+            },
+        )
+
+        try {
+            exporter.start()
+            assertTrue(sent.await(2, TimeUnit.SECONDS))
+            await { exporter.status.value == NavAssistV2ConnectionStatus.ONLINE }
+            assertEquals("udp://192.168.102.187:4213", exporter.resolvedEndpoint.value)
+            assertEquals(0, discoveryCalls.get())
+        } finally {
+            exporter.stop()
+        }
+    }
+
+    @Test
     fun `discovered endpoint becomes online only after a successful POST`() {
         val postEntered = CountDownLatch(1)
         val allowPost = CountDownLatch(1)

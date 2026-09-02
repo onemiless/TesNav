@@ -220,6 +220,7 @@ class NavigationForegroundService : Service() {
             identity = navAssistIdentity,
             endpointDiscovery = UdpNavAssistV2EndpointDiscovery(navAssistIdentity, navAssistPairingStore),
             pinnedDeviceProvider = navAssistPairingStore::pinnedDevice,
+            useUnauthenticatedUdp = true,
         )
         observeExporterInstances()
         exporter.start()

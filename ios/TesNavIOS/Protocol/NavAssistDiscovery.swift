@@ -109,7 +109,7 @@ private struct AuthenticatedOffer {
   let publicKey: String
 }
 
-private struct UdpDatagram {
+struct UdpDatagram {
   let sourceHost: String
   let payload: Data
 }
@@ -120,8 +120,13 @@ enum IPv4DirectedBroadcast {
   }
 }
 
-private enum UdpBroadcast {
-  static func exchange(_ request: Data) throws -> [UdpDatagram] {
+enum UdpBroadcast {
+  static func exchange(
+    _ request: Data,
+    port: UInt16 = NavAssistProtocol.discoveryPort,
+    receiveWindow: TimeInterval = 0.75,
+    maxResponseBytes: Int = 512
+  ) throws -> [UdpDatagram] {
     let descriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
     guard descriptor >= 0 else { throw NavAssistDiscoveryError.socket }
     defer { Darwin.close(descriptor) }
@@ -136,7 +141,7 @@ private enum UdpBroadcast {
       var target = sockaddr_in()
       target.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
       target.sin_family = sa_family_t(AF_INET)
-      target.sin_port = NavAssistProtocol.discoveryPort.bigEndian
+      target.sin_port = port.bigEndian
       target.sin_addr = address
       let sent = request.withUnsafeBytes { bytes in
         withUnsafePointer(to: &target) { pointer in
@@ -149,7 +154,7 @@ private enum UdpBroadcast {
     }
     guard successfulTargets > 0 else { throw NavAssistDiscoveryError.socket }
 
-    let deadline = Date().addingTimeInterval(0.75)
+    let deadline = Date().addingTimeInterval(receiveWindow)
     var results: [UdpDatagram] = []
     while Date() < deadline && results.count < 64 {
       let remaining = max(1, Int32(deadline.timeIntervalSinceNow * 1_000))
@@ -158,13 +163,13 @@ private enum UdpBroadcast {
 
       var source = sockaddr_in()
       var sourceLength = socklen_t(MemoryLayout<sockaddr_in>.size)
-      var buffer = [UInt8](repeating: 0, count: 513)
+      var buffer = [UInt8](repeating: 0, count: maxResponseBytes + 1)
       let count = withUnsafeMutablePointer(to: &source) { pointer in
         pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
           recvfrom(descriptor, &buffer, buffer.count, 0, $0, &sourceLength)
         }
       }
-      guard count > 0, count <= 512 else { continue }
+      guard count > 0, count <= maxResponseBytes else { continue }
       var address = source.sin_addr
       var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
       guard inet_ntop(AF_INET, &address, &text, socklen_t(INET_ADDRSTRLEN)) != nil else { continue }
@@ -200,8 +205,30 @@ private enum UdpBroadcast {
         if broadcast != address { targets.append(broadcast.bigEndian) }
       }
     }
-    targets.append(INADDR_BROADCAST)
+    if targets.isEmpty { targets.append(INADDR_BROADCAST) }
     return Array(Set(targets)).map { in_addr(s_addr: $0) }
+  }
+}
+
+enum UnauthenticatedNavAssistUDP {
+  static func send(snapshot: Data, sessionID: String, sequence: UInt64) throws -> String? {
+    guard !snapshot.isEmpty, snapshot.count <= 8 * 1_024 else { throw NavAssistDiscoveryError.socket }
+    let responses = try UdpBroadcast.exchange(
+      snapshot,
+      port: NavAssistProtocol.udpSnapshotPort,
+      receiveWindow: 0.35,
+      maxResponseBytes: 512
+    )
+    for response in responses {
+      guard let object = try? JSONSerialization.jsonObject(with: response.payload) as? [String: Any],
+            Set(object.keys) == Set(["messageType", "schemaVersion", "sessionId", "sequence"]),
+            object["messageType"] as? String == "navassist_udp_ack",
+            (object["schemaVersion"] as? NSNumber)?.intValue == NavAssistProtocol.schemaVersion,
+            object["sessionId"] as? String == sessionID,
+            (object["sequence"] as? NSNumber)?.uint64Value == sequence else { continue }
+      return response.sourceHost
+    }
+    return nil
   }
 }
 

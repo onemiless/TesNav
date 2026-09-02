@@ -198,13 +198,8 @@ class SettingsDialog(
             routeOverviewBlock.visibility = if (enabled) View.VISIBLE else View.GONE
         }
         fun renderPairing() {
-            val deviceId = service.navAssistPairedDeviceId()
-            navAssistPairingState.text = if (deviceId == null) {
-                "自动配对：打开 App 后自动发现；首次配对要求 C3XL 处于 offroad"
-            } else {
-                "自动配对：设备 ${deviceId.take(8)}…（无需 Token）"
-            }
-            clearNavAssistPairing.isEnabled = deviceId != null
+            navAssistPairingState.text = "UDP 4213 自动广播：无需 Token、配对或预填 IP"
+            clearNavAssistPairing.visibility = View.GONE
         }
         renderPairing()
         clearNavAssistPairing.setOnClickListener {
@@ -312,7 +307,7 @@ class SettingsDialog(
         NavAssistV2ConnectionStatus.SCANNING -> "正在扫描"
         NavAssistV2ConnectionStatus.MULTIPLE_DEVICES -> "多设备冲突（已拒绝连接）"
         NavAssistV2ConnectionStatus.DISCOVERED -> "已发现，等待导航数据"
-        NavAssistV2ConnectionStatus.ONLINE -> "HTTP 在线"
+        NavAssistV2ConnectionStatus.ONLINE -> "在线"
         NavAssistV2ConnectionStatus.ERROR -> "错误"
     }
 

@@ -89,6 +89,8 @@ internal class HttpNavAssistV2Exporter(
     private val pinnedDeviceProvider: () -> PinnedNavAssistDevice?,
     private val httpClient: NavAssistV2HttpClient = OkHttpNavAssistV2Client(),
     private val discoveryRetryMs: Long = DEFAULT_DISCOVERY_RETRY_MS,
+    private val useUnauthenticatedUdp: Boolean = false,
+    private val udpClient: NavAssistV3UdpClient = JvmUdpNavAssistV3Client(),
 ) : NavigationDataExporter {
     private val mutableConnectionState = MutableStateFlow(ExportConnectionState.STOPPED)
     override val connectionState: StateFlow<ExportConnectionState> = mutableConnectionState
@@ -136,6 +138,33 @@ internal class HttpNavAssistV2Exporter(
         running = true
         mutableConnectionState.value = ExportConnectionState.STARTING
         val intervalMs = config.intervalMs.coerceAtLeast(NavAssistV2Protocol.MIN_INTERVAL_MS)
+        if (useUnauthenticatedUdp && config.usesDiscovery()) {
+            publisherJob = scope.launch {
+                while (isActive && running) {
+                    val startedAtNs = System.nanoTime()
+                    val state = stateProvider()
+                    if (state != null) {
+                        val snapshot = session.nextSnapshot(state, System.currentTimeMillis())
+                        val body = CanonicalJson.encode(snapshot).toByteArray(Charsets.UTF_8)
+                        val host = runCatching { udpClient.send(body, snapshot.sessionId, snapshot.sequence) }.getOrNull()
+                        if (host != null) {
+                            mutableResolvedEndpoint.value = "udp://$host:4213"
+                            mutableLastError.value = null
+                            mutableConnectionState.value = ExportConnectionState.CONNECTED
+                            mutableStatus.value = NavAssistV2ConnectionStatus.ONLINE
+                        } else {
+                            mutableResolvedEndpoint.value = null
+                            mutableLastError.value = "未收到 C3XL UDP 确认"
+                            mutableConnectionState.value = ExportConnectionState.STARTING
+                            mutableStatus.value = NavAssistV2ConnectionStatus.SCANNING
+                        }
+                    }
+                    val elapsedMs = (System.nanoTime() - startedAtNs) / NANOS_PER_MILLISECOND
+                    delay((intervalMs - elapsedMs).coerceAtLeast(0L))
+                }
+            }
+            return
+        }
         publisherJob = scope.launch {
             var endpoint = explicitEndpoint
             var consecutivePostFailures = 0

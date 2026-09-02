@@ -99,8 +99,8 @@ final class SearchViewController: UIViewController {
   }
 
   private func updateConnection(_ status: NavAssistClientStatus) {
-    let device = status.deviceID.map { String($0.prefix(8)) + "…" } ?? "未发现"
-    connectionLabel.text = "C3XL：\(status.detail) · 设备 \(device) · App \(status.appKeyID.prefix(8))…"
+    let device = status.deviceID ?? "未发现"
+    connectionLabel.text = "C3XL：\(status.detail) · 地址 \(device)"
     connectionLabel.textColor = status.connection == .online ? .systemGreen : .secondaryLabel
   }
 
@@ -187,13 +187,8 @@ final class SearchViewController: UIViewController {
 
   @objc private func showSettings() {
     let status = NavAssistClient.shared.status()
-    let message = "连接：\(status.detail)\n设备：\(status.deviceID.map { String($0.prefix(8)) + "…" } ?? "未发现")\nApp：\(status.appKeyID.prefix(8))…"
+    let message = "连接：\(status.detail)\n地址：\(status.deviceID ?? "未发现")\nUDP 4213 自动广播，无需 Token 或配对"
     let sheet = UIAlertController(title: "NavAssist 设置", message: message, preferredStyle: .actionSheet)
-    let forget = UIAlertAction(title: "忘记已配对设备", style: .destructive) { _ in
-      NavAssistClient.shared.clearPairing()
-    }
-    forget.isEnabled = NavAssistClient.shared.hasPairing()
-    sheet.addAction(forget)
     sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
     sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
     present(sheet, animated: true)

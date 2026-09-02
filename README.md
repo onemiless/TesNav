@@ -62,8 +62,10 @@ HOME_ASSISTANT_TOKEN=xxxx
 
 ```
 
-当前 NavAssist v3 默认使用 UDP 7765 自动发现和 TCP 7766 签名快照，不需要 URL
-或共享 Token。Android/iOS 能力契约见
+当前 NavAssist v3 在未配置 URL 时默认把严格 v3 快照广播到 UDP 4213，收到
+C3XL 对相同 session/sequence 的确认后显示 `udp://<ip>:4213` 在线；不需要
+Token、配对或提前知道 IP。显式配置 URL 时 Android 仍可使用原 TCP 7766
+签名快照。Android/iOS 能力契约见
 [`docs/PLATFORM_PARITY.md`](docs/PLATFORM_PARITY.md)。
 
 ## 构建与安装
