@@ -8,13 +8,25 @@ enum NavAssistIdentityError: Error {
 }
 
 final class NavAssistIdentity {
+  #if targetEnvironment(simulator)
+  static let shared = NavAssistIdentity(privateKey: P256.Signing.PrivateKey())
+  #else
   static let shared = try! NavAssistIdentity()
+  #endif
 
   let keyID: String
   let publicKeyText: String
   private let privateKey: P256.Signing.PrivateKey
 
-  init(keychain: NavAssistKeychain = .live) throws {
+  private init(privateKey: P256.Signing.PrivateKey) {
+    self.privateKey = privateKey
+    let der = privateKey.publicKey.derRepresentation
+    publicKeyText = der.base64URLEncodedString()
+    keyID = SHA256.hash(data: der).prefix(16).map { String(format: "%02x", $0) }.joined()
+  }
+
+  convenience init(keychain: NavAssistKeychain = .live) throws {
+    let privateKey: P256.Signing.PrivateKey
     if let stored = try keychain.load() {
       privateKey = try P256.Signing.PrivateKey(rawRepresentation: stored)
     } else {
@@ -22,10 +34,8 @@ final class NavAssistIdentity {
       try keychain.save(generated.rawRepresentation)
       privateKey = generated
     }
-    let der = privateKey.publicKey.derRepresentation
-    guard der.count == 91 else { throw NavAssistIdentityError.invalidKey }
-    publicKeyText = der.base64URLEncodedString()
-    keyID = SHA256.hash(data: der).prefix(16).map { String(format: "%02x", $0) }.joined()
+    guard privateKey.publicKey.derRepresentation.count == 91 else { throw NavAssistIdentityError.invalidKey }
+    self.init(privateKey: privateKey)
   }
 
   func sign(_ data: Data) throws -> String {

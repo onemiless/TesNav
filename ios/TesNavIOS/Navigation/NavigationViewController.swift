@@ -10,6 +10,7 @@ final class NavigationViewController: UIViewController {
   private let startMode: NavigationStartMode
   private let manager = AMapNaviDriveManager.sharedInstance()
   private let driveView = AMapNaviDriveView()
+  private let connectionView = ConnectionStatusView(compact: true)
   private let speechButton = UIButton(type: .system)
   private var telemetry: NavigationTelemetry?
   private var started = false
@@ -29,8 +30,12 @@ final class NavigationViewController: UIViewController {
   override func viewDidLoad() {
     super.viewDidLoad()
     title = destination.name
-    view.backgroundColor = .black
+    view.backgroundColor = .systemGroupedBackground
     navigationItem.hidesBackButton = true
+    navigationItem.rightBarButtonItem = UIBarButtonItem(
+      image: UIImage(systemName: "gearshape"), style: .plain, target: self, action: #selector(showNavigationSettings)
+    )
+    navigationItem.rightBarButtonItem?.accessibilityLabel = "导航设置"
     configureUI()
     configureNavigation()
   }
@@ -69,25 +74,36 @@ final class NavigationViewController: UIViewController {
 
   private func configureUI() {
     driveView.translatesAutoresizingMaskIntoConstraints = false
+    connectionView.translatesAutoresizingMaskIntoConstraints = false
 
     let stopButton = UIButton(type: .system)
     stopButton.translatesAutoresizingMaskIntoConstraints = false
     var stopConfiguration = UIButton.Configuration.filled()
     stopConfiguration.title = "结束导航"
+    stopConfiguration.image = UIImage(systemName: "xmark.circle.fill")
+    stopConfiguration.imagePadding = 8
+    stopConfiguration.cornerStyle = .medium
+    stopConfiguration.baseForegroundColor = .white
     stopConfiguration.baseBackgroundColor = .systemRed
     stopButton.configuration = stopConfiguration
     stopButton.addTarget(self, action: #selector(stopNavigation), for: .touchUpInside)
 
     speechButton.translatesAutoresizingMaskIntoConstraints = false
-    var speechConfiguration = UIButton.Configuration.filled()
-    speechConfiguration.title = "静音"
+    var speechConfiguration = UIButton.Configuration.tinted()
+    speechConfiguration.title = "语音开启"
+    speechConfiguration.image = UIImage(systemName: "speaker.wave.2.fill")
+    speechConfiguration.imagePadding = 8
+    speechConfiguration.cornerStyle = .medium
+    speechConfiguration.baseForegroundColor = .systemBlue
     speechButton.configuration = speechConfiguration
     speechButton.addTarget(self, action: #selector(toggleSpeech), for: .touchUpInside)
 
     simulationButton.translatesAutoresizingMaskIntoConstraints = false
-    var simulationConfiguration = UIButton.Configuration.filled()
+    var simulationConfiguration = UIButton.Configuration.tinted()
     simulationConfiguration.title = "暂停"
-    simulationConfiguration.baseBackgroundColor = .systemIndigo
+    simulationConfiguration.image = UIImage(systemName: "pause.fill")
+    simulationConfiguration.imagePadding = 6
+    simulationConfiguration.baseForegroundColor = .systemIndigo
     simulationButton.configuration = simulationConfiguration
     simulationButton.addTarget(self, action: #selector(toggleSimulation), for: .touchUpInside)
     simulationButton.isHidden = startMode != .simulation
@@ -95,20 +111,41 @@ final class NavigationViewController: UIViewController {
     let controls = UIStackView(arrangedSubviews: [speechButton, simulationButton, stopButton])
     controls.translatesAutoresizingMaskIntoConstraints = false
     controls.axis = .horizontal
-    controls.spacing = 12
+    controls.spacing = 10
     controls.distribution = .fillEqually
 
+    let toolbar = UIView()
+    toolbar.translatesAutoresizingMaskIntoConstraints = false
+    toolbar.backgroundColor = .secondarySystemGroupedBackground
+    toolbar.addSubview(controls)
+    let separator = UIView()
+    separator.translatesAutoresizingMaskIntoConstraints = false
+    separator.backgroundColor = .separator
+    toolbar.addSubview(separator)
+
     view.addSubview(driveView)
-    view.addSubview(controls)
+    view.addSubview(connectionView)
+    view.addSubview(toolbar)
     NSLayoutConstraint.activate([
-      driveView.topAnchor.constraint(equalTo: view.topAnchor),
+      connectionView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+      connectionView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+      connectionView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+      driveView.topAnchor.constraint(equalTo: connectionView.bottomAnchor, constant: 8),
       driveView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       driveView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      driveView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-      controls.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-      controls.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+      driveView.bottomAnchor.constraint(equalTo: toolbar.topAnchor),
+      toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      toolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      toolbar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+      controls.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 12),
+      controls.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+      controls.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
       controls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
-      controls.heightAnchor.constraint(equalToConstant: 48),
+      controls.heightAnchor.constraint(greaterThanOrEqualToConstant: 50),
+      separator.topAnchor.constraint(equalTo: toolbar.topAnchor),
+      separator.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor),
+      separator.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
+      separator.heightAnchor.constraint(equalToConstant: 0.5),
     ])
   }
 
@@ -116,10 +153,12 @@ final class NavigationViewController: UIViewController {
     speechPaused.toggle()
     if speechPaused {
       manager.pauseNaviSpeech()
-      speechButton.configuration?.title = "恢复语音"
+      speechButton.configuration?.title = "语音关闭"
+      speechButton.configuration?.image = UIImage(systemName: "speaker.slash.fill")
     } else {
       manager.resumeNaviSpeech()
-      speechButton.configuration?.title = "静音"
+      speechButton.configuration?.title = "语音开启"
+      speechButton.configuration?.image = UIImage(systemName: "speaker.wave.2.fill")
     }
   }
 
@@ -129,9 +168,11 @@ final class NavigationViewController: UIViewController {
     if simulationPaused {
       manager.pauseNavi()
       simulationButton.configuration?.title = "继续"
+      simulationButton.configuration?.image = UIImage(systemName: "play.fill")
     } else {
       manager.resumeNavi()
       simulationButton.configuration?.title = "暂停"
+      simulationButton.configuration?.image = UIImage(systemName: "pause.fill")
     }
   }
 
@@ -145,7 +186,7 @@ final class NavigationViewController: UIViewController {
     navigationController?.popToRootViewController(animated: true)
   }
 
-  private func showNavigationSettings() {
+  @objc private func showNavigationSettings() {
     guard presentedViewController == nil else { return }
     let sheet = UIAlertController(title: "导航设置", message: nil, preferredStyle: .actionSheet)
     sheet.addAction(UIAlertAction(title: speechPaused ? "恢复语音" : "静音", style: .default) { [weak self] _ in
@@ -158,9 +199,11 @@ final class NavigationViewController: UIViewController {
       guard let self else { return }
       self.driveView.autoZoomMapLevel.toggle()
     })
+    sheet.addAction(UIAlertAction(title: "重新连接 C3XL", style: .default) { _ in
+      NavAssistClient.shared.requestRediscovery()
+    })
     sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
-    sheet.popoverPresentationController?.sourceView = driveView
-    sheet.popoverPresentationController?.sourceRect = CGRect(x: driveView.bounds.midX, y: driveView.bounds.midY, width: 1, height: 1)
+    sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
     present(sheet, animated: true)
   }
 

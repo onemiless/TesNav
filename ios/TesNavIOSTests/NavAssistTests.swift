@@ -3,6 +3,24 @@ import XCTest
 @testable import TesNavIOS
 
 final class NavAssistTests: XCTestCase {
+  func testConnectionDisplaySeparatesFreshTransportFromStaleNavigationGuidance() {
+    var state = NavigationObservation()
+    state.mode = "realtime"
+    state.routeActive = true
+    state.routeMatched = true
+    state.latitude = 31.2
+    state.longitude = 121.4
+    state.accuracyM = 4
+    state.bearingDeg = 90
+    state.speedKph = 20
+    state.locationObservedAtMs = 1
+    state.guidanceObservedAtMs = 1_000
+    XCTAssertEqual(NavAssistGuidanceState.display(state, nowMs: 2_000).0, .ready)
+    XCTAssertEqual(NavAssistGuidanceState.display(state, nowMs: 3_001).0, .stale)
+    state.mode = "simulation"
+    XCTAssertEqual(NavAssistGuidanceState.display(state, nowMs: 3_001).0, .inactive)
+  }
+
   func testP256IdentityMatchesC3WireEncoding() throws {
     let privateKey = P256.Signing.PrivateKey()
     let publicDER = privateKey.publicKey.derRepresentation

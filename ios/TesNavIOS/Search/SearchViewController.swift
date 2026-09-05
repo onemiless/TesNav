@@ -6,17 +6,20 @@ final class SearchViewController: UIViewController {
   private let locationManager = CLLocationManager()
   private let searchBar = UISearchBar()
   private let currentAddressLabel = UILabel()
-  private let connectionLabel = UILabel()
+  private let connectionView = ConnectionStatusView()
+  private let emptyStateLabel = UILabel()
   private let tableView = UITableView(frame: .zero, style: .insetGrouped)
   private var debounceWork: DispatchWorkItem?
   private var candidates: [Destination] = []
   private var latestLocation: CLLocation?
   private var lastReverseGeocodeLocation: CLLocation?
+  private var lastResolvedAddress: String?
 
   override func viewDidLoad() {
     super.viewDidLoad()
     title = "TesNav"
-    view.backgroundColor = .systemBackground
+    view.backgroundColor = .systemGroupedBackground
+    navigationController?.navigationBar.tintColor = .systemBlue
     searchAPI.delegate = self
     locationManager.delegate = self
     locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
@@ -28,7 +31,6 @@ final class SearchViewController: UIViewController {
       target: self,
       action: #selector(showSettings)
     )
-    observeConnection()
     requestLocation()
 
     if (Bundle.main.object(forInfoDictionaryKey: "AMapAPIKey") as? String)?.isEmpty != false {
@@ -38,40 +40,66 @@ final class SearchViewController: UIViewController {
   }
 
   deinit {
-    NotificationCenter.default.removeObserver(self)
     debounceWork?.cancel()
     searchAPI.cancelAllRequests()
   }
 
   private func configureUI() {
+    let heading = UILabel()
+    heading.text = "想去哪里？"
+    heading.font = UIFontMetrics(forTextStyle: .largeTitle).scaledFont(for: .systemFont(ofSize: 30, weight: .bold))
+    heading.adjustsFontForContentSizeCategory = true
+    heading.textColor = .label
+    heading.numberOfLines = 2
+
     searchBar.translatesAutoresizingMaskIntoConstraints = false
     searchBar.delegate = self
-    searchBar.placeholder = "输入目的地，例如：上海虹桥站"
+    searchBar.placeholder = "搜索地点、道路或附近地标"
+    searchBar.searchBarStyle = .minimal
+    searchBar.searchTextField.font = .preferredFont(forTextStyle: .body)
+    searchBar.searchTextField.adjustsFontForContentSizeCategory = true
+    searchBar.searchTextField.backgroundColor = .secondarySystemGroupedBackground
+    searchBar.searchTextField.textColor = .label
+    searchBar.accessibilityIdentifier = "destinationSearch"
     searchBar.autocapitalizationType = .none
     searchBar.autocorrectionType = .no
 
     currentAddressLabel.translatesAutoresizingMaskIntoConstraints = false
     currentAddressLabel.font = .preferredFont(forTextStyle: .subheadline)
-    currentAddressLabel.numberOfLines = 2
+    currentAddressLabel.adjustsFontForContentSizeCategory = true
+    currentAddressLabel.textColor = .label
+    currentAddressLabel.numberOfLines = 3
     currentAddressLabel.text = "正在获取当前位置…"
 
-    connectionLabel.translatesAutoresizingMaskIntoConstraints = false
-    connectionLabel.font = .preferredFont(forTextStyle: .caption1)
-    connectionLabel.textColor = .secondaryLabel
-    connectionLabel.numberOfLines = 2
+    let locationIcon = UIImageView(image: UIImage(systemName: "location.fill"))
+    locationIcon.tintColor = .systemBlue
+    locationIcon.contentMode = .scaleAspectFit
+    locationIcon.translatesAutoresizingMaskIntoConstraints = false
+    let locationRow = UIStackView(arrangedSubviews: [locationIcon, currentAddressLabel])
+    locationRow.axis = .horizontal
+    locationRow.alignment = .center
+    locationRow.spacing = 10
+    locationRow.isLayoutMarginsRelativeArrangement = true
+    locationRow.layoutMargins = UIEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
+    locationIcon.widthAnchor.constraint(equalToConstant: 20).isActive = true
+    locationIcon.heightAnchor.constraint(equalToConstant: 20).isActive = true
 
     tableView.translatesAutoresizingMaskIntoConstraints = false
     tableView.dataSource = self
     tableView.delegate = self
     tableView.keyboardDismissMode = .onDrag
+    tableView.backgroundColor = .clear
+    tableView.rowHeight = UITableView.automaticDimension
+    tableView.estimatedRowHeight = 88
+    tableView.sectionHeaderTopPadding = 8
     tableView.register(UITableViewCell.self, forCellReuseIdentifier: "candidate")
 
-    let header = UIStackView(arrangedSubviews: [searchBar, currentAddressLabel, connectionLabel])
+    let header = UIStackView(arrangedSubviews: [heading, searchBar, locationRow, connectionView])
     header.translatesAutoresizingMaskIntoConstraints = false
     header.axis = .vertical
-    header.spacing = 8
+    header.spacing = 14
     header.isLayoutMarginsRelativeArrangement = true
-    header.layoutMargins = UIEdgeInsets(top: 8, left: 12, bottom: 4, right: 12)
+    header.layoutMargins = UIEdgeInsets(top: 12, left: 20, bottom: 8, right: 20)
 
     view.addSubview(header)
     view.addSubview(tableView)
@@ -82,26 +110,15 @@ final class SearchViewController: UIViewController {
       tableView.topAnchor.constraint(equalTo: header.bottomAnchor),
       tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+      tableView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
     ])
-  }
-
-  private func observeConnection() {
-    updateConnection(NavAssistClient.shared.status())
-    NotificationCenter.default.addObserver(
-      forName: .navAssistStatusChanged,
-      object: nil,
-      queue: .main
-    ) { [weak self] notification in
-      guard let status = notification.object as? NavAssistClientStatus else { return }
-      self?.updateConnection(status)
-    }
-  }
-
-  private func updateConnection(_ status: NavAssistClientStatus) {
-    let device = status.deviceID ?? "未发现"
-    connectionLabel.text = "C3XL：\(status.detail) · 地址 \(device)"
-    connectionLabel.textColor = status.connection == .online ? .systemGreen : .secondaryLabel
+    emptyStateLabel.font = .preferredFont(forTextStyle: .body)
+    emptyStateLabel.adjustsFontForContentSizeCategory = true
+    emptyStateLabel.textColor = .secondaryLabel
+    emptyStateLabel.textAlignment = .center
+    emptyStateLabel.numberOfLines = 0
+    emptyStateLabel.text = "搜索你要去的地方\n选择地址后，即可查看多条路线"
+    tableView.backgroundView = emptyStateLabel
   }
 
   private func requestLocation() {
@@ -120,6 +137,7 @@ final class SearchViewController: UIViewController {
   private func searchTips(keyword: String) {
     guard !keyword.isEmpty else {
       candidates = []
+      emptyStateLabel.text = "搜索你要去的地方\n选择地址后，即可查看多条路线"
       tableView.reloadData()
       return
     }
@@ -187,9 +205,21 @@ final class SearchViewController: UIViewController {
 
   @objc private func showSettings() {
     let status = NavAssistClient.shared.status()
-    let message = "连接：\(status.detail)\n地址：\(status.deviceID ?? "未发现")\nUDP 4213 自动广播，无需 Token 或配对"
-    let sheet = UIAlertController(title: "NavAssist 设置", message: message, preferredStyle: .actionSheet)
-    sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+    let message = "设备\(status.connection == .online ? "已连接" : "暂未连接")\n当前地址：\(status.deviceID ?? "等待发现")"
+    let sheet = UIAlertController(title: "TesNav 设置", message: message, preferredStyle: .actionSheet)
+    sheet.addAction(UIAlertAction(title: "重新连接 C3XL", style: .default) { _ in
+      NavAssistClient.shared.requestRediscovery()
+    })
+    sheet.addAction(UIAlertAction(title: "定位与本地网络权限", style: .default) { _ in
+      guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+      UIApplication.shared.open(url)
+    })
+    sheet.addAction(UIAlertAction(title: "重新获取当前位置", style: .default) { [weak self] _ in
+      self?.lastReverseGeocodeLocation = nil
+      self?.currentAddressLabel.text = "正在更新当前位置…"
+      self?.requestLocation()
+    })
+    sheet.addAction(UIAlertAction(title: "完成", style: .cancel))
     sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
     present(sheet, animated: true)
   }
@@ -211,7 +241,14 @@ extension SearchViewController: UISearchBarDelegate {
 }
 
 extension SearchViewController: UITableViewDataSource, UITableViewDelegate {
-  func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { candidates.count }
+  func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+    emptyStateLabel.isHidden = !candidates.isEmpty
+    return candidates.count
+  }
+
+  func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+    candidates.isEmpty ? nil : "选择目的地 · \(candidates.count) 个地点"
+  }
 
   func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
     let cell = tableView.dequeueReusableCell(withIdentifier: "candidate", for: indexPath)
@@ -219,7 +256,16 @@ extension SearchViewController: UITableViewDataSource, UITableViewDelegate {
     var configuration = cell.defaultContentConfiguration()
     configuration.text = destination.name
     configuration.secondaryText = destination.address
+    configuration.textProperties.font = .preferredFont(forTextStyle: .headline)
+    configuration.textProperties.color = .label
+    configuration.secondaryTextProperties.font = .preferredFont(forTextStyle: .subheadline)
+    configuration.secondaryTextProperties.color = .secondaryLabel
     configuration.secondaryTextProperties.numberOfLines = 2
+    configuration.image = UIImage(systemName: "mappin.circle.fill")
+    configuration.imageProperties.tintColor = .systemBlue
+    configuration.imageProperties.maximumSize = CGSize(width: 30, height: 30)
+    configuration.directionalLayoutMargins.top = 16
+    configuration.directionalLayoutMargins.bottom = 16
     cell.contentConfiguration = configuration
     cell.accessoryType = .disclosureIndicator
     return cell
@@ -237,13 +283,7 @@ extension SearchViewController: CLLocationManagerDelegate {
   func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
     guard let location = locations.last, location.horizontalAccuracy >= 0 else { return }
     latestLocation = location
-    let coordinate = amapCoordinate(location)
-    currentAddressLabel.text = String(
-      format: "当前位置：%.6f, %.6f（精度 %.0f 米）",
-      coordinate.latitude,
-      coordinate.longitude,
-      location.horizontalAccuracy
-    )
+    currentAddressLabel.text = lastResolvedAddress.map { "当前位置：\($0)" } ?? "已获取当前位置，正在解析地址…"
     reverseGeocode(location)
   }
 
@@ -256,17 +296,20 @@ extension SearchViewController: AMapSearchDelegate {
   func onInputTipsSearchDone(_ request: AMapInputTipsSearchRequest!, response: AMapInputTipsSearchResponse!) {
     let tips = response?.tips ?? []
     candidates = tips.compactMap(destination(from:))
+    emptyStateLabel.text = "正在查找附近的匹配地点…"
     if candidates.isEmpty, let keyword = request?.keywords.nonEmpty { resolvePOI(keyword: keyword) }
     tableView.reloadData()
   }
 
   func onPOISearchDone(_ request: AMapPOISearchBaseRequest!, response: AMapPOISearchResponse!) {
     candidates = (response?.pois ?? []).prefix(8).compactMap(destination(from:))
+    emptyStateLabel.text = "没有找到匹配地点\n试试更完整的地名或附近地标"
     tableView.reloadData()
   }
 
   func onReGeocodeSearchDone(_ request: AMapReGeocodeSearchRequest!, response: AMapReGeocodeSearchResponse!) {
     if let address = response?.regeocode.formattedAddress.nonEmpty {
+      lastResolvedAddress = address
       currentAddressLabel.text = "当前位置：\(address)"
     }
   }
@@ -277,6 +320,7 @@ extension SearchViewController: AMapSearchDelegate {
       currentAddressLabel.text = AMapSearchFailureMessage.currentAddress(details)
     } else {
       candidates = []
+      emptyStateLabel.text = "搜索暂时不可用\n请检查网络后重试"
       currentAddressLabel.text = AMapSearchFailureMessage.search(details)
       tableView.reloadData()
     }
