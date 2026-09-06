@@ -7,16 +7,12 @@ extension Notification.Name {
 enum NavAssistGuidanceState {
   case inactive, ready, waiting, stale
 
-  static func display(_ state: NavigationObservation, nowMs: UInt64) -> (NavAssistGuidanceState, String) {
+  static func display(_ state: NavigationObservation, nowMs _: UInt64) -> (NavAssistGuidanceState, String) {
     if state.mode == "simulation" { return (.inactive, "模拟导航预览") }
     if state.arrived { return (.inactive, "已到达目的地") }
     if state.mode != "realtime" { return (.inactive, "选择目的地并开始导航") }
     if state.routeRecalculating { return (.waiting, "正在重新规划路线") }
-    guard let observed = state.guidanceObservedAtMs else { return (.waiting, "等待高德更新引导信息") }
-    guard nowMs >= observed, nowMs - observed <= 2_000 else {
-      let detail = nowMs >= observed ? "引导 \((nowMs - observed) / 1_000) 秒未更新 · 联动暂不可用" : "引导时间待同步"
-      return (.stale, detail)
-    }
+    guard state.guidanceObservedAtMs != nil else { return (.waiting, "等待高德更新引导信息") }
     guard state.routeMatched == true, state.routeActive else { return (.waiting, "等待匹配当前路线") }
     guard let latitude = state.latitude, (-90...90).contains(latitude),
           let longitude = state.longitude, (-180...180).contains(longitude),
@@ -24,7 +20,7 @@ enum NavAssistGuidanceState {
           let bearing = state.bearingDeg, (0...360).contains(bearing),
           let speed = state.speedKph, (0...300).contains(speed),
           state.locationObservedAtMs != nil else { return (.waiting, "等待完整导航信息") }
-    return (.ready, "路线与引导正在更新")
+    return (.ready, "路线已匹配 · 导航联动已启用")
   }
 }
 

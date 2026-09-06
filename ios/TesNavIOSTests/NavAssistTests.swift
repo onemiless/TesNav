@@ -3,7 +3,7 @@ import XCTest
 @testable import TesNavIOS
 
 final class NavAssistTests: XCTestCase {
-  func testConnectionDisplaySeparatesFreshTransportFromStaleNavigationGuidance() {
+  func testConnectionDisplayKeepsUnchangedGuidanceReadyWhileRealtimeRouteRemainsMatched() {
     var state = NavigationObservation()
     state.mode = "realtime"
     state.routeActive = true
@@ -16,7 +16,7 @@ final class NavAssistTests: XCTestCase {
     state.locationObservedAtMs = 1
     state.guidanceObservedAtMs = 1_000
     XCTAssertEqual(NavAssistGuidanceState.display(state, nowMs: 2_000).0, .ready)
-    XCTAssertEqual(NavAssistGuidanceState.display(state, nowMs: 3_001).0, .stale)
+    XCTAssertEqual(NavAssistGuidanceState.display(state, nowMs: 46_000).0, .ready)
     state.mode = "simulation"
     XCTAssertEqual(NavAssistGuidanceState.display(state, nowMs: 3_001).0, .inactive)
   }
