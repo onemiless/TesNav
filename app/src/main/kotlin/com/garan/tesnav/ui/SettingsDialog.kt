@@ -2,6 +2,7 @@ package com.garan.tesnav.ui
 
 import android.app.Dialog
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
@@ -18,6 +19,8 @@ import com.amap.api.navi.model.AMapNaviPath
 import com.garan.tesnav.export.ExportConnectionState
 import com.garan.tesnav.export.NavAssistV2ConnectionStatus
 import com.garan.tesnav.model.GeoPoint
+import com.garan.tesnav.AmapKeyActivity
+import com.garan.tesnav.model.NavigationMode
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.util.RouteGeometrySimplifier
 import java.util.Locale
@@ -162,6 +165,14 @@ class SettingsDialog(
         val body = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(12), dp(16), dp(20))
+            addView(Button(context).apply {
+                text = "高德 Key 与配置指南"
+                setOnClickListener {
+                    if (service.stateStore.state.value.navigationMode == NavigationMode.IDLE) {
+                        context.startActivity(Intent(context, AmapKeyActivity::class.java))
+                    } else android.widget.Toast.makeText(context, "请先结束当前导航再修改 Key", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }, matchWidthParams())
             addView(navAssistBlock, matchWidthParams())
             addView(syncToggle, matchWidthParams())
             addView(webSocketText, matchWidthParams(dp(12)))

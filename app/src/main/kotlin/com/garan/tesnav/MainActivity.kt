@@ -56,6 +56,9 @@ import com.garan.tesnav.search.selectLocationFailure
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.ui.NavigationStateDialog
 import com.garan.tesnav.ui.SettingsDialog
+import com.garan.tesnav.config.AmapConfiguration
+import com.garan.tesnav.search.SearchHistory
+import com.garan.tesnav.search.SearchHistoryEntry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -80,6 +83,10 @@ class MainActivity : Activity(), AddressLookupView {
     private lateinit var currentAddressText: TextView
     private lateinit var searchPanel: LinearLayout
     private lateinit var addressLookupController: AddressLookupController
+    private lateinit var clearHistoryButton: Button
+    private val history by lazy { SearchHistory.from(this) }
+    private var historyRows: List<SearchHistoryEntry> = emptyList()
+    private var showingHistory = false
 
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var runtimeService: NavigationForegroundService? = null
@@ -103,6 +110,7 @@ class MainActivity : Activity(), AddressLookupView {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as NavigationForegroundService.LocalBinder).getService()
             runtimeService = service
+            service.refreshAMapConfiguration()
             debugButton.isEnabled = true
             observeRuntime(service)
         }
@@ -117,6 +125,11 @@ class MainActivity : Activity(), AddressLookupView {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!AmapConfiguration.prepare(applicationContext)) {
+            startActivity(Intent(this, AmapKeyActivity::class.java))
+            finish()
+            return
+        }
 
         MapsInitializer.updatePrivacyShow(applicationContext, true, true)
         MapsInitializer.updatePrivacyAgree(applicationContext, true)
@@ -136,6 +149,7 @@ class MainActivity : Activity(), AddressLookupView {
         mapView.onCreate(savedInstanceState)
         configureMap()
         configureActions()
+        showRecentSearches()
 
         if (hasLocationPermission()) {
             enableMapLocation()
@@ -166,6 +180,12 @@ class MainActivity : Activity(), AddressLookupView {
             text = "也可长按地图选择目的地"
             textSize = 13f
             setTextColor(Color.rgb(84, 110, 122))
+        }
+        clearHistoryButton = Button(this).apply {
+            text = "清空历史"
+            textSize = 13f
+            visibility = View.GONE
+            setOnClickListener { confirmClearHistory() }
         }
         suggestionAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf())
         suggestionList = ListView(this).apply {
@@ -198,6 +218,9 @@ class MainActivity : Activity(), AddressLookupView {
         })
         addView(searchStatus, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(6)
+        })
+        addView(clearHistoryButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+            gravity = Gravity.END
         })
         addView(suggestionList, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(MAX_SUGGESTION_LIST_HEIGHT_DP)).apply {
             topMargin = dp(4)
@@ -308,6 +331,13 @@ class MainActivity : Activity(), AddressLookupView {
                 clearDestination()
                 suggestionJob?.cancel()
                 val query = value?.toString().orEmpty()
+                if (query.isNotBlank()) {
+                    showingHistory = false
+                    suggestions = emptyList()
+                    suggestionAdapter.clear()
+                    suggestionList.visibility = View.GONE
+                    clearHistoryButton.visibility = View.GONE
+                }
                 if (query.trim().length < MIN_SUGGESTION_QUERY_LENGTH) {
                     addressLookupController.suggestDestinations(query, lastLocationPoint)
                     return
@@ -319,16 +349,41 @@ class MainActivity : Activity(), AddressLookupView {
             }
         })
         suggestionList.setOnItemClickListener { _, _, position, _ ->
-            suggestions.getOrNull(position)?.let(addressLookupController::selectSuggestion)
+            if (showingHistory) {
+                historyRows.getOrNull(position)?.let { entry ->
+                    if (entry.destination != null) onDestinationFound(entry.destination) else {
+                        suppressTextChanges = true
+                        destinationInput.setText(entry.query)
+                        suppressTextChanges = false
+                        searchDestinationAddress()
+                    }
+                }
+            } else suggestions.getOrNull(position)?.let(addressLookupController::selectSuggestion)
         }
+        suggestionList.setOnItemLongClickListener { _, _, position, _ ->
+            val entry = if (showingHistory) historyRows.getOrNull(position) else null
+            if (entry == null) false else {
+                android.app.AlertDialog.Builder(this).setTitle("删除这条记录？").setMessage(entry.query)
+                    .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
+                        history.remove(entry)
+                        showRecentSearches()
+                    }.show()
+                true
+            }
+        }
+        destinationInput.setOnFocusChangeListener { _, focused -> if (focused) showRecentSearches() }
         settingsButton.setOnClickListener {
-            runtimeService?.let { service ->
-                SettingsDialog(
-                    context = this,
-                    scope = activityScope,
-                    service = service,
-                ).show()
-            } ?: toast("后台导航服务尚未连接")
+            android.app.AlertDialog.Builder(this).setTitle("TesNav 设置")
+                .setItems(arrayOf("高德 Key 与配置指南", "清空搜索历史", "连接与导航设置")) { _, index ->
+                    when (index) {
+                        0 -> if (currentState.navigationMode == NavigationMode.IDLE) {
+                            startActivity(Intent(this, AmapKeyActivity::class.java))
+                        } else toast("请先结束当前导航再修改 Key")
+                        1 -> confirmClearHistory()
+                        2 -> runtimeService?.let { SettingsDialog(this, activityScope, it).show() }
+                            ?: toast("后台导航服务尚未连接")
+                    }
+                }.setNegativeButton("关闭", null).show()
         }
         debugButton.setOnClickListener {
             runtimeService?.let { service ->
@@ -342,10 +397,14 @@ class MainActivity : Activity(), AddressLookupView {
             toast("请先结束当前导航")
             return
         }
-        addressLookupController.searchDestination(destinationInput.text?.toString().orEmpty(), lastLocationPoint)
+        val query = destinationInput.text?.toString().orEmpty()
+        history.recordQuery(query)
+        addressLookupController.searchDestination(query, lastLocationPoint)
     }
 
     override fun onDestinationSearchStarted(query: String) = withLiveUi {
+        showingHistory = false
+        clearHistoryButton.visibility = View.GONE
         searchButton.isEnabled = false
         searchProgress.visibility = View.VISIBLE
         searchStatus.setTextColor(Color.rgb(84, 110, 122))
@@ -353,6 +412,12 @@ class MainActivity : Activity(), AddressLookupView {
     }
 
     override fun onDestinationSuggestions(suggestions: List<AddressSuggestion>) = withLiveUi {
+        if (suggestions.isEmpty() && destinationInput.text.isNullOrBlank()) {
+            showRecentSearches()
+            return@withLiveUi
+        }
+        showingHistory = false
+        clearHistoryButton.visibility = View.GONE
         this.suggestions = suggestions
         suggestionAdapter.clear()
         suggestionAdapter.addAll(suggestions.map(::suggestionLabel))
@@ -372,6 +437,7 @@ class MainActivity : Activity(), AddressLookupView {
             return@withLiveUi
         }
         val point = LatLng(candidate.latitude, candidate.longitude)
+        history.recordDestination(candidate)
         suppressTextChanges = true
         destinationInput.setText(candidate.name)
         destinationInput.setSelection(destinationInput.text.length)
@@ -412,6 +478,30 @@ class MainActivity : Activity(), AddressLookupView {
     private fun finishDestinationSearch() {
         searchButton.isEnabled = true
         searchProgress.visibility = View.GONE
+    }
+
+    private fun showRecentSearches() {
+        if (!destinationInput.text.isNullOrBlank() || currentState.navigationMode != NavigationMode.IDLE) return
+        showingHistory = true
+        historyRows = history.entries()
+        suggestions = emptyList()
+        suggestionAdapter.clear()
+        suggestionAdapter.addAll(historyRows.map { entry ->
+            entry.destination?.let { "⌖ ${entry.query}\n${it.formattedAddress}" } ?: "↺ ${entry.query}"
+        })
+        suggestionAdapter.notifyDataSetChanged()
+        suggestionList.visibility = if (historyRows.isEmpty()) View.GONE else View.VISIBLE
+        clearHistoryButton.visibility = if (historyRows.isEmpty()) View.GONE else View.VISIBLE
+        searchStatus.text = if (historyRows.isEmpty()) "搜索地点后会保留历史；也可长按地图选择目的地"
+                            else "最近搜索 · 点击重选，长按删除"
+    }
+
+    private fun confirmClearHistory() {
+        android.app.AlertDialog.Builder(this).setTitle("清空搜索历史？").setMessage("仅删除本机的搜索记录。")
+            .setNegativeButton("取消", null).setPositiveButton("清空") { _, _ ->
+                history.clear()
+                showRecentSearches()
+            }.show()
     }
 
     private fun suggestionLabel(suggestion: AddressSuggestion): String {
@@ -596,11 +686,12 @@ class MainActivity : Activity(), AddressLookupView {
 
     override fun onStart() {
         super.onStart()
-        bindRuntimeService()
+        if (::mapView.isInitialized) bindRuntimeService()
     }
 
     override fun onResume() {
         super.onResume()
+        if (!::mapView.isInitialized) return
         val returnedFromNavigation = navigationPageOpening
         navigationPageOpening = false
         if (returnedFromNavigation) clearDestination()
@@ -609,7 +700,7 @@ class MainActivity : Activity(), AddressLookupView {
     }
 
     override fun onPause() {
-        mapView.onPause()
+        if (::mapView.isInitialized) mapView.onPause()
         super.onPause()
     }
 
@@ -618,20 +709,20 @@ class MainActivity : Activity(), AddressLookupView {
         if (bindRequested) unbindService(runtimeConnection)
         runtimeService = null
         bindRequested = false
-        debugButton.isEnabled = false
+        if (::debugButton.isInitialized) debugButton.isEnabled = false
         super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        mapView.onSaveInstanceState(outState)
+        if (::mapView.isInitialized) mapView.onSaveInstanceState(outState)
         super.onSaveInstanceState(outState)
     }
 
     override fun onDestroy() {
         suggestionJob?.cancel()
-        addressLookupController.close()
+        if (::addressLookupController.isInitialized) addressLookupController.close()
         activityScope.cancel()
-        mapView.onDestroy()
+        if (::mapView.isInitialized) mapView.onDestroy()
         super.onDestroy()
     }
 

@@ -37,6 +37,11 @@
         </activity>
 
         <activity
+            android:name=".AmapKeyActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".NavigationActivity"
             android:exported="false" />
 

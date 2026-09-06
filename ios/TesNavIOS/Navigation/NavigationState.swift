@@ -1,6 +1,6 @@
 import Foundation
 
-struct Destination: Equatable {
+struct Destination: Equatable, Codable {
   let name: String
   let address: String
   let poiID: String?

@@ -14,6 +14,10 @@ final class SearchViewController: UIViewController {
   private var latestLocation: CLLocation?
   private var lastReverseGeocodeLocation: CLLocation?
   private var lastResolvedAddress: String?
+  private let history = SearchHistoryStore()
+  private var historyRows: [SearchHistoryEntry] = []
+  private var activeKeyword = ""
+  private var showingHistory: Bool { activeKeyword.isEmpty }
 
   override func viewDidLoad() {
     super.viewDidLoad()
@@ -32,11 +36,12 @@ final class SearchViewController: UIViewController {
       action: #selector(showSettings)
     )
     requestLocation()
+    showHistory()
+  }
 
-    if (Bundle.main.object(forInfoDictionaryKey: "AMapAPIKey") as? String)?.isEmpty != false {
-      currentAddressLabel.text = "未配置高德 iOS Key（Bundle ID: com.garan.tesnav.ios）"
-      currentAddressLabel.textColor = .systemRed
-    }
+  override func viewWillAppear(_ animated: Bool) {
+    super.viewWillAppear(animated)
+    if showingHistory { showHistory() }
   }
 
   deinit {
@@ -136,9 +141,7 @@ final class SearchViewController: UIViewController {
 
   private func searchTips(keyword: String) {
     guard !keyword.isEmpty else {
-      candidates = []
-      emptyStateLabel.text = "搜索你要去的地方\n选择地址后，即可查看多条路线"
-      tableView.reloadData()
+      showHistory()
       return
     }
     let request = AMapInputTipsSearchRequest()
@@ -153,6 +156,10 @@ final class SearchViewController: UIViewController {
 
   private func resolvePOI(keyword: String) {
     guard !keyword.isEmpty else { return }
+    activeKeyword = keyword
+    candidates = []
+    emptyStateLabel.text = "正在查找匹配地点…"
+    tableView.reloadData()
     let request = AMapPOIKeywordsSearchRequest()
     request.keywords = keyword
     request.cityLimit = false
@@ -207,6 +214,10 @@ final class SearchViewController: UIViewController {
     let status = NavAssistClient.shared.status()
     let message = "设备\(status.connection == .online ? "已连接" : "暂未连接")\n当前地址：\(status.deviceID ?? "等待发现")"
     let sheet = UIAlertController(title: "TesNav 设置", message: message, preferredStyle: .actionSheet)
+    sheet.addAction(UIAlertAction(title: "高德 Key 与配置指南", style: .default) { [weak self] _ in
+      self?.navigationController?.pushViewController(AMapKeyViewController(), animated: true)
+    })
+    sheet.addAction(UIAlertAction(title: "清空搜索历史", style: .destructive) { [weak self] _ in self?.confirmClearHistory() })
     sheet.addAction(UIAlertAction(title: "重新连接 C3XL", style: .default) { _ in
       NavAssistClient.shared.requestRediscovery()
     })
@@ -223,45 +234,85 @@ final class SearchViewController: UIViewController {
     sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
     present(sheet, animated: true)
   }
+
+  private func showHistory() {
+    candidates = []
+    historyRows = history.entries()
+    emptyStateLabel.text = "搜索你要去的地方\n最近搜索会保留在本机"
+    tableView.reloadData()
+  }
+
+  @objc private func confirmClearHistory() {
+    let alert = UIAlertController(title: "清空搜索历史？", message: "仅删除本机的搜索记录。", preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "清空", style: .destructive) { [weak self] _ in
+      self?.history.clear()
+      if self?.showingHistory == true { self?.showHistory() }
+    })
+    present(alert, animated: true)
+  }
 }
 
 extension SearchViewController: UISearchBarDelegate {
   func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
     debounceWork?.cancel()
     let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    activeKeyword = keyword
+    candidates = []
+    tableView.reloadData()
+    if keyword.isEmpty { showHistory(); return }
     let work = DispatchWorkItem { [weak self] in self?.searchTips(keyword: keyword) }
     debounceWork = work
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
   }
 
   func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
+    debounceWork?.cancel()
     searchBar.resignFirstResponder()
-    resolvePOI(keyword: searchBar.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+    let keyword = searchBar.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    history.record(query: keyword)
+    resolvePOI(keyword: keyword)
   }
 }
 
 extension SearchViewController: UITableViewDataSource, UITableViewDelegate {
   func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-    emptyStateLabel.isHidden = !candidates.isEmpty
-    return candidates.count
+    let count = showingHistory ? historyRows.count : candidates.count
+    emptyStateLabel.isHidden = count > 0
+    return count
   }
 
   func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-    candidates.isEmpty ? nil : "选择目的地 · \(candidates.count) 个地点"
+    if showingHistory { return historyRows.isEmpty ? nil : "最近搜索 · 左滑可删除" }
+    return candidates.isEmpty ? nil : "选择目的地 · \(candidates.count) 个地点"
+  }
+
+  func tableView(_ tableView: UITableView, viewForFooterInSection section: Int) -> UIView? {
+    guard showingHistory, !historyRows.isEmpty else { return nil }
+    let clear = UIButton(type: .system)
+    clear.setTitle("清空搜索历史", for: .normal)
+    clear.tintColor = .systemRed
+    clear.addTarget(self, action: #selector(confirmClearHistory), for: .touchUpInside)
+    return clear
+  }
+
+  func tableView(_ tableView: UITableView, heightForFooterInSection section: Int) -> CGFloat {
+    showingHistory && !historyRows.isEmpty ? 48 : 0
   }
 
   func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
     let cell = tableView.dequeueReusableCell(withIdentifier: "candidate", for: indexPath)
-    let destination = candidates[indexPath.row]
+    let entry = showingHistory ? historyRows[indexPath.row] : nil
+    let destination = entry?.destination ?? (showingHistory ? nil : candidates[indexPath.row])
     var configuration = cell.defaultContentConfiguration()
-    configuration.text = destination.name
-    configuration.secondaryText = destination.address
+    configuration.text = destination?.name ?? entry?.query
+    configuration.secondaryText = destination?.address ?? "再次搜索"
     configuration.textProperties.font = .preferredFont(forTextStyle: .headline)
     configuration.textProperties.color = .label
     configuration.secondaryTextProperties.font = .preferredFont(forTextStyle: .subheadline)
     configuration.secondaryTextProperties.color = .secondaryLabel
     configuration.secondaryTextProperties.numberOfLines = 2
-    configuration.image = UIImage(systemName: "mappin.circle.fill")
+    configuration.image = UIImage(systemName: showingHistory ? "clock.arrow.circlepath" : "mappin.circle.fill")
     configuration.imageProperties.tintColor = .systemBlue
     configuration.imageProperties.maximumSize = CGSize(width: 30, height: 30)
     configuration.directionalLayoutMargins.top = 16
@@ -273,7 +324,25 @@ extension SearchViewController: UITableViewDataSource, UITableViewDelegate {
 
   func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
     tableView.deselectRow(at: indexPath, animated: true)
-    navigationController?.pushViewController(RoutePlanningViewController(destination: candidates[indexPath.row]), animated: true)
+    if showingHistory, historyRows[indexPath.row].destination == nil {
+      let query = historyRows[indexPath.row].query
+      searchBar.text = query
+      history.record(query: query)
+      resolvePOI(keyword: query)
+      tableView.reloadData()
+      return
+    }
+    let destination = showingHistory ? historyRows[indexPath.row].destination! : candidates[indexPath.row]
+    history.record(destination: destination)
+    navigationController?.pushViewController(RoutePlanningViewController(destination: destination), animated: true)
+  }
+
+  func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool { showingHistory }
+
+  func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+    guard showingHistory, editingStyle == .delete else { return }
+    history.remove(historyRows[indexPath.row])
+    showHistory()
   }
 }
 
@@ -294,6 +363,7 @@ extension SearchViewController: CLLocationManagerDelegate {
 
 extension SearchViewController: AMapSearchDelegate {
   func onInputTipsSearchDone(_ request: AMapInputTipsSearchRequest!, response: AMapInputTipsSearchResponse!) {
+    guard !activeKeyword.isEmpty, request?.keywords == activeKeyword else { return }
     let tips = response?.tips ?? []
     candidates = tips.compactMap(destination(from:))
     emptyStateLabel.text = "正在查找附近的匹配地点…"
@@ -302,6 +372,8 @@ extension SearchViewController: AMapSearchDelegate {
   }
 
   func onPOISearchDone(_ request: AMapPOISearchBaseRequest!, response: AMapPOISearchResponse!) {
+    guard !activeKeyword.isEmpty, let keywordRequest = request as? AMapPOIKeywordsSearchRequest,
+          keywordRequest.keywords == activeKeyword else { return }
     candidates = (response?.pois ?? []).prefix(8).compactMap(destination(from:))
     emptyStateLabel.text = "没有找到匹配地点\n试试更完整的地名或附近地标"
     tableView.reloadData()
@@ -319,6 +391,9 @@ extension SearchViewController: AMapSearchDelegate {
     if request is AMapReGeocodeSearchRequest {
       currentAddressLabel.text = AMapSearchFailureMessage.currentAddress(details)
     } else {
+      if showingHistory { return }
+      if let tips = request as? AMapInputTipsSearchRequest, tips.keywords != activeKeyword { return }
+      if let poi = request as? AMapPOIKeywordsSearchRequest, poi.keywords != activeKeyword { return }
       candidates = []
       emptyStateLabel.text = "搜索暂时不可用\n请检查网络后重试"
       currentAddressLabel.text = AMapSearchFailureMessage.search(details)

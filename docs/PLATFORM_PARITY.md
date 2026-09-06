@@ -5,6 +5,11 @@ layout may follow each platform, but the following user and NavAssist behavior
 must remain equivalent:
 
 - fuzzy destination search, current-address display, and selectable POI results;
+- local recent search history (20 entries, newest first, deduplicated queries
+  and selected places), repeat search/reselect, single deletion and clear-all;
+- a missing-Key setup screen before AMap SDK objects are created, local Key
+  persistence, a settings entry, and platform-specific official setup guidance;
+- copyable iOS Bundle ID or Android package name and current signing SHA-1;
 - up to three route alternatives with time, distance, toll, and traffic-light counts;
 - real-time GPS navigation, simulation, stop, pause/resume simulation, internal
   voice guidance, and mute/resume voice;

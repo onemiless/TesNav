@@ -20,6 +20,8 @@ import com.amap.api.maps.MapsInitializer
 import com.amap.api.navi.model.AMapNaviPath
 import com.garan.tesnav.BuildConfig
 import com.garan.tesnav.MainActivity
+import com.garan.tesnav.config.AmapConfiguration
+import com.garan.tesnav.model.NavigationMode
 import com.garan.tesnav.data.CommaStateStore
 import com.garan.tesnav.data.NavigationRepository
 import com.garan.tesnav.data.NavigationStateStore
@@ -52,6 +54,7 @@ class NavigationForegroundService : Service() {
     private val binder = LocalBinder()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var wakeLock: PowerManager.WakeLock? = null
+    private var appliedApiKey: String? = null
 
     lateinit var stateStore: NavigationStateStore
         private set
@@ -99,6 +102,11 @@ class NavigationForegroundService : Service() {
         super.onCreate()
         createNotificationChannel()
         promoteToForeground("正在启动导航服务")
+        if (!AmapConfiguration.prepare(applicationContext)) {
+            stopSelf()
+            return
+        }
+        appliedApiKey = AmapConfiguration.effectiveKey(applicationContext)
         acquireWakeLock()
 
         MapsInitializer.updatePrivacyShow(applicationContext, true, true)
@@ -132,9 +140,13 @@ class NavigationForegroundService : Service() {
         if (mutableTeslaSyncEnabled.value) startHomeAssistant()
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder? = if (::repository.isInitialized) binder else null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!::repository.isInitialized) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_STOP_SERVICE) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -161,6 +173,14 @@ class NavigationForegroundService : Service() {
     fun resumeSimulation(): Boolean = repository.resumeSimulation()
     fun setSpeechEnabled(enabled: Boolean): Boolean = repository.setSpeechEnabled(enabled)
     fun stopNavigation() = repository.stopNavigation()
+    fun refreshAMapConfiguration() {
+        val key = AmapConfiguration.effectiveKey(applicationContext) ?: return
+        if (key == appliedApiKey || stateStore.state.value.navigationMode != NavigationMode.IDLE) return
+        repository.release()
+        AmapConfiguration.prepare(applicationContext)
+        appliedApiKey = key
+        repository.initialize()
+    }
     fun currentPath(): AMapNaviPath? = repository.currentPath()
 
     fun navAssistPairedDeviceId(): String? = navAssistPairingStore.pinnedDevice()?.deviceId

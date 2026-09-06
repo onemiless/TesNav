@@ -34,6 +34,7 @@ import com.garan.tesnav.model.RouteChoice
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.ui.NavigationStateDialog
 import com.garan.tesnav.ui.SettingsDialog
+import com.garan.tesnav.config.AmapConfiguration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -85,6 +86,11 @@ class NavigationActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!AmapConfiguration.prepare(applicationContext)) {
+            startActivity(Intent(this, AmapKeyActivity::class.java))
+            finish()
+            return
+        }
         naviView = AMapNaviView(this, createViewOptions())
         createControls()
         setContentView(createRootView())
@@ -375,11 +381,12 @@ class NavigationActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        bindRuntimeService()
+        if (::naviView.isInitialized) bindRuntimeService()
     }
 
     override fun onResume() {
         super.onResume()
+        if (!::naviView.isInitialized) return
         naviView.onResume()
         val options = naviView.viewOptions
         options.setTilt(0)
@@ -388,7 +395,7 @@ class NavigationActivity : Activity() {
     }
 
     override fun onPause() {
-        naviView.onPause()
+        if (::naviView.isInitialized) naviView.onPause()
         super.onPause()
     }
 
@@ -397,12 +404,12 @@ class NavigationActivity : Activity() {
         if (bindRequested) unbindService(runtimeConnection)
         runtimeService = null
         bindRequested = false
-        debugButton.isEnabled = false
+        if (::debugButton.isInitialized) debugButton.isEnabled = false
         super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        naviView.onSaveInstanceState(outState)
+        if (::naviView.isInitialized) naviView.onSaveInstanceState(outState)
         super.onSaveInstanceState(outState)
     }
 
@@ -419,7 +426,7 @@ class NavigationActivity : Activity() {
 
     override fun onDestroy() {
         activityScope.cancel()
-        naviView.onDestroy()
+        if (::naviView.isInitialized) naviView.onDestroy()
         super.onDestroy()
     }
 

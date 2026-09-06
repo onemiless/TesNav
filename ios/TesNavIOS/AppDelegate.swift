@@ -20,8 +20,11 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
 enum AppBootstrap {
   static let privacyKey = "tesnav.amap.privacy-consent.v1"
+  private static var configuredKey: String?
 
   static func configureAMap() {
+    guard let key = AMapKeySettings.current else { return }
+    if let previous = configuredKey, previous != key { AMapNaviDriveManager.destroyInstance() }
     AMapSearchAPI.updatePrivacyShow(.didShow, privacyInfo: .didContain)
     AMapSearchAPI.updatePrivacyAgree(.didAgree)
     AMapNaviManagerConfig.shared().updatePrivacyShow(.didShow, privacyInfo: .didContain)
@@ -29,11 +32,15 @@ enum AppBootstrap {
     MAMapView.updatePrivacyShow(.didShow, privacyInfo: .didContain)
     MAMapView.updatePrivacyAgree(.didAgree)
     AMapServices.shared().enableHTTPS = true
-    AMapServices.shared().apiKey = Bundle.main.object(forInfoDictionaryKey: "AMapAPIKey") as? String ?? ""
+    AMapServices.shared().apiKey = key
+    configuredKey = key
     NavAssistClient.shared.start()
   }
 
   static func mainController() -> UIViewController {
-    UINavigationController(rootViewController: SearchViewController())
+    guard AMapKeySettings.current != nil else {
+      return UINavigationController(rootViewController: AMapKeyViewController())
+    }
+    return UINavigationController(rootViewController: SearchViewController())
   }
 }

@@ -6,6 +6,19 @@ import org.junit.Test
 
 class AddressLookupControllerTest {
     @Test
+    fun `clearing input for history prevents an old explicit search from replacing history`() {
+        val gateway = FakeAddressLookupGateway()
+        val view = RecordingAddressLookupView()
+        val controller = AddressLookupController(gateway, view, elapsedRealtimeMs = { 1_000L })
+        controller.searchDestination("上海站")
+        controller.suggestDestinations("", null)
+        gateway.destinationRequests.single().complete(
+            LookupResult.Success(listOf(suggestion("旧结果", 31.2, 121.4))),
+        )
+        assertTrue(view.suggestionBatches.last().isEmpty())
+    }
+
+    @Test
     fun `blank submission invalidates an older destination result`() {
         val gateway = FakeAddressLookupGateway()
         val view = RecordingAddressLookupView()

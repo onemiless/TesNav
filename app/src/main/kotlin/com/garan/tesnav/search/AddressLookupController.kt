@@ -78,6 +78,7 @@ class AddressLookupController(
 
     fun suggestDestinations(rawQuery: String, near: AddressPoint?) {
         if (!active) return
+        destinationGeneration++
         val query = rawQuery.trim()
         val generation = ++suggestionGeneration
         if (query.length < MIN_SUGGESTION_QUERY_LENGTH) {
