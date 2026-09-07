@@ -1,6 +1,8 @@
 package com.garan.tesnav.data
 
 import android.content.Context
+import com.garan.tesnav.config.SpeechMode
+import com.garan.tesnav.config.SpeechPreferences
 import com.amap.api.navi.AMapNavi
 import com.amap.api.navi.SimpleNaviListener
 import com.amap.api.navi.enums.NaviType
@@ -31,6 +33,8 @@ class NavigationRepository(
     private val onRouteChanged: (AMapNaviPath?) -> Unit = {},
 ) : SimpleNaviListener() {
     private val appContext = context.applicationContext
+    private val speechPreferences = SpeechPreferences(appContext)
+    val speechMode: SpeechMode get() = speechPreferences.mode
     private var navi: AMapNavi? = null
     private var routeCalculationPending = false
     private var requestedNavigationMode: NavigationMode? = null
@@ -42,6 +46,7 @@ class NavigationRepository(
         navi = AMapNavi.getInstance(appContext).also {
             it.addAMapNaviListener(this)
             it.setUseInnerVoice(true)
+            applySpeech(it, speechMode)
             it.setTrafficStatusUpdateEnabled(true)
             it.setTrafficInfoUpdateEnabled(true)
             it.setCameraInfoUpdateEnabled(true)
@@ -120,6 +125,7 @@ class NavigationRepository(
             )
         }
         val accepted = runCatching {
+            applySpeech(engine, speechMode)
             engine.calculateDriveRoute(
                 listOf(NaviLatLng(startLat, startLng)),
                 listOf(NaviLatLng(latitude, longitude)),
@@ -146,10 +152,23 @@ class NavigationRepository(
     fun resumeSimulation(): Boolean = controlSimulation(paused = false)
 
     fun setSpeechEnabled(enabled: Boolean): Boolean {
+        return setSpeechMode(if (enabled) speechPreferences.resumedMode else SpeechMode.MUTED)
+    }
+
+    private fun applySpeech(engine: AMapNavi, mode: SpeechMode): Boolean = runCatching {
+        if (mode == SpeechMode.MUTED) engine.stopSpeak() else {
+            if (!engine.setBroadcastMode(mode.value)) return false
+            engine.startSpeak()
+        }
+        true
+    }.getOrDefault(false)
+
+    fun setSpeechMode(mode: SpeechMode): Boolean {
         val engine = navi ?: return false
         return runCatching {
-            if (enabled) engine.startSpeak() else engine.stopSpeak()
-            update { copy(speechEnabled = enabled, errorMessage = null) }
+            check(applySpeech(engine, mode)) { "高德未接受播报模式" }
+            speechPreferences.save(mode)
+            update { copy(speechEnabled = mode != SpeechMode.MUTED, errorMessage = null) }
             true
         }.getOrElse { error ->
             update { copy(errorMessage = "语音设置失败：${error.message}") }
@@ -178,8 +197,8 @@ class NavigationRepository(
         requestedNavigationMode = mode
         val started = navi?.startNavi(type) == true
         if (started) {
-            navi?.startSpeak()
-            update { copy(navigationMode = mode, simulationPaused = false, speechEnabled = true, errorMessage = null) }
+            update { copy(navigationMode = mode, simulationPaused = false, errorMessage = null) }
+            setSpeechMode(speechMode)
         } else {
             requestedNavigationMode = null
             update { copy(errorMessage = "导航启动请求未被 SDK 接受") }
@@ -224,6 +243,7 @@ class NavigationRepository(
             else -> expected
         }
         update { copy(navigationMode = mode, simulationPaused = false, errorMessage = null) }
+        setSpeechMode(speechMode)
     }
 
     override fun onLocationChange(location: AMapNaviLocation?) {

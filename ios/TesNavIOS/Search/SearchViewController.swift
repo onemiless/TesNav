@@ -214,6 +214,9 @@ final class SearchViewController: UIViewController {
     let status = NavAssistClient.shared.status()
     let message = "设备\(status.connection == .online ? "已连接" : "暂未连接")\n当前地址：\(status.deviceID ?? "等待发现")"
     let sheet = UIAlertController(title: "TesNav 设置", message: message, preferredStyle: .actionSheet)
+    sheet.addAction(UIAlertAction(title: "语音播报频次", style: .default) { [weak self] _ in
+      self?.navigationController?.pushViewController(NavigationSpeechViewController(), animated: true)
+    })
     sheet.addAction(UIAlertAction(title: "高德 Key 与配置指南", style: .default) { [weak self] _ in
       self?.navigationController?.pushViewController(AMapKeyViewController(), animated: true)
     })

@@ -8,3 +8,5 @@ ios/Pods/
 ios/*.xcworkspace/
 ios/*.xcodeproj/
 ios/DerivedData/
+ios/.renewal/
+ios/__pycache__/

@@ -14,7 +14,7 @@ final class NavigationViewController: UIViewController {
   private let speechButton = UIButton(type: .system)
   private var telemetry: NavigationTelemetry?
   private var started = false
-  private var speechPaused = false
+  private var speechPaused: Bool { NavigationSpeechSettings.shared.mode == .muted }
   private var simulationPaused = false
   private let simulationButton = UIButton(type: .system)
 
@@ -42,10 +42,12 @@ final class NavigationViewController: UIViewController {
 
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
+    updateSpeechButton()
     guard !started else { return }
     started = true
     NavAssistClient.shared.requestRediscovery()
     let accepted = startMode == .realtime ? manager.startGPSNavi() : manager.startEmulatorNavi()
+    NavigationSpeech.apply(NavigationSpeechSettings.shared.mode)
     if !accepted {
       NavigationStateStore.shared.navigationStartFailed()
       showStartFailure()
@@ -60,7 +62,7 @@ final class NavigationViewController: UIViewController {
   private func configureNavigation() {
     manager.isUseInternalTTS = true
     manager.isUseTextPlay = true
-    manager.resumeNaviSpeech()
+    NavigationSpeech.apply(NavigationSpeechSettings.shared.mode)
     manager.allowsBackgroundLocationUpdates = true
     manager.pausesLocationUpdatesAutomatically = false
     manager.addDataRepresentative(driveView)
@@ -150,14 +152,19 @@ final class NavigationViewController: UIViewController {
   }
 
   @objc private func toggleSpeech() {
-    speechPaused.toggle()
+    let settings = NavigationSpeechSettings.shared
+    let next = speechPaused ? settings.resumedMode : NavigationSpeechMode.muted
+    guard NavigationSpeech.apply(next) else { return }
+    settings.save(next)
+    updateSpeechButton()
+  }
+
+  private func updateSpeechButton() {
     if speechPaused {
-      manager.pauseNaviSpeech()
       speechButton.configuration?.title = "语音关闭"
       speechButton.configuration?.image = UIImage(systemName: "speaker.slash.fill")
     } else {
-      manager.resumeNaviSpeech()
-      speechButton.configuration?.title = "语音开启"
+      speechButton.configuration?.title = NavigationSpeechSettings.shared.mode == .concise ? "简洁播报" : "详细播报"
       speechButton.configuration?.image = UIImage(systemName: "speaker.wave.2.fill")
     }
   }
@@ -189,6 +196,9 @@ final class NavigationViewController: UIViewController {
   @objc private func showNavigationSettings() {
     guard presentedViewController == nil else { return }
     let sheet = UIAlertController(title: "导航设置", message: nil, preferredStyle: .actionSheet)
+    sheet.addAction(UIAlertAction(title: "语音播报频次", style: .default) { [weak self] _ in
+      self?.navigationController?.pushViewController(NavigationSpeechViewController(), animated: true)
+    })
     sheet.addAction(UIAlertAction(title: speechPaused ? "恢复语音" : "静音", style: .default) { [weak self] _ in
       self?.toggleSpeech()
     })

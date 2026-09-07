@@ -1,6 +1,8 @@
 package com.garan.tesnav.ui
 
 import android.app.Dialog
+import android.app.AlertDialog
+import com.garan.tesnav.config.SpeechMode
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -165,6 +167,21 @@ class SettingsDialog(
         val body = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(12), dp(16), dp(20))
+            addView(Button(context).apply {
+                text = "播报频次：${service.speechMode.title}"
+                setOnClickListener {
+                    val choices = SpeechMode.entries
+                    AlertDialog.Builder(context).setTitle("语音播报频次")
+                        .setSingleChoiceItems(choices.map { it.title }.toTypedArray(), choices.indexOf(service.speechMode)) { picker, index ->
+                            if (service.setSpeechMode(choices[index])) {
+                                text = "播报频次：${service.speechMode.title}"
+                                picker.dismiss()
+                                android.widget.Toast.makeText(context, "已保存。简洁／详细下次算路生效，静音立即生效", android.widget.Toast.LENGTH_LONG).show()
+                            } else android.widget.Toast.makeText(context, "播报设置失败，请稍后重试", android.widget.Toast.LENGTH_SHORT).show()
+                        }.setNegativeButton("取消", null).show()
+                }
+            }, matchWidthParams())
+            addView(bodyText("简洁减少提醒；详细增加提醒；静音停止全部语音。自动保存，不影响发送给 C3XL 的导航信息频率。"), matchWidthParams())
             addView(Button(context).apply {
                 text = "高德 Key 与配置指南"
                 setOnClickListener {

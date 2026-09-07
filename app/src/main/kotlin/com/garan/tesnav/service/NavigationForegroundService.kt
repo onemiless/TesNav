@@ -172,6 +172,8 @@ class NavigationForegroundService : Service() {
     fun pauseSimulation(): Boolean = repository.pauseSimulation()
     fun resumeSimulation(): Boolean = repository.resumeSimulation()
     fun setSpeechEnabled(enabled: Boolean): Boolean = repository.setSpeechEnabled(enabled)
+    val speechMode: com.garan.tesnav.config.SpeechMode get() = repository.speechMode
+    fun setSpeechMode(mode: com.garan.tesnav.config.SpeechMode): Boolean = repository.setSpeechMode(mode)
     fun stopNavigation() = repository.stopNavigation()
     fun refreshAMapConfiguration() {
         val key = AmapConfiguration.effectiveKey(applicationContext) ?: return

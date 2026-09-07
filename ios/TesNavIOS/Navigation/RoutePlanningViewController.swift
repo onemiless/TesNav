@@ -41,7 +41,7 @@ final class RoutePlanningViewController: UIViewController {
     manager.isUseTextPlay = true
     manager.allowsBackgroundLocationUpdates = true
     manager.pausesLocationUpdatesAutomatically = false
-    manager.setBroadcastMode(.detailed)
+    NavigationSpeech.apply(NavigationSpeechSettings.shared.mode)
     driveView.autoZoomMapLevel = true
     driveView.showGreyAfterPass = true
     driveView.trackingMode = .carNorth
