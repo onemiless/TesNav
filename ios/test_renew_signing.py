@@ -43,6 +43,16 @@ class RenewalTests(unittest.TestCase):
             renew.renew("phone")
             run.assert_not_called()
 
+    def test_paired_device_with_cached_ddi_false_is_probed(self):
+        device = {"identifier": "core", "hardwareProperties": {"udid": "phone"},
+                  "connectionProperties": {"tunnelState": "disconnected"},
+                  "deviceProperties": {"ddiServicesAvailable": False}}
+        answers = [{"devices": [device]}, {"runningProcesses": [{"executable": "/app/TesNavIOS.app/TesNavIOS"}]}]
+        with patch.object(renew, "status", return_value=(None, "missing")), \
+             patch.object(renew, "device_json", side_effect=answers) as probe:
+            renew.renew("phone")
+            self.assertEqual(probe.call_count, 2)
+
     def test_fresh_successful_install_does_not_contact_device(self):
         with patch.object(renew, "status", return_value=(datetime.now(timezone.utc) + timedelta(days=5), "last_successful_install")), \
              patch.object(renew, "device_json") as device:

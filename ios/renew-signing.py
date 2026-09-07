@@ -64,7 +64,9 @@ def renew(device_id):
         return
     devices = device_json(["list", "devices"])["devices"]
     device = next((d for d in devices if device_id in (d["identifier"], d["hardwareProperties"]["udid"])), None)
-    if device is None or not device.get("deviceProperties", {}).get("ddiServicesAvailable"):
+    # The list command caches DDI=false even for an available paired phone.
+    # Process inspection below opens its tunnel and checks actual reachability.
+    if device is None or device.get("connectionProperties", {}).get("tunnelState") == "unavailable":
         print('{"status":"waiting_for_device"}')
         return
     identifier, udid = device["identifier"], device["hardwareProperties"]["udid"]
