@@ -20,6 +20,7 @@ android {
         applicationId = "com.garan.tesnav"
         minSdk = 23
         targetSdk = 37
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = 3
         versionName = "1.2"
 
@@ -29,6 +30,12 @@ android {
         buildConfigField("String", "WEBSOCKET_URL", "\"${providers.gradleProperty("WEBSOCKET_URL").orNull ?: "ws://192.168.53.232:7766/amap-navigation"}\"")
         buildConfigField("String", "API_TOKEN", "\"${providers.gradleProperty("API_TOKEN").orNull ?: ""}\"")
         buildConfigField("long", "EXPORT_INTERVAL_MS", "${providers.gradleProperty("EXPORT_INTERVAL_MS").orNull ?: "200"}L")
+        // SDK locations arrive about every 2 s. Expire outages, never renew on exporter ticks.
+        // An explicit zero still builds a preview-only client.
+        for ((budget, defaultMs) in mapOf("NAV_ASSIST_SOURCE_BUDGET_MS" to 3_000L, "NAV_ASSIST_PROGRESS_BUDGET_MS" to 6_000L)) {
+            val value = providers.gradleProperty(budget).orNull?.toLongOrNull()?.coerceAtLeast(0L) ?: defaultMs
+            buildConfigField("long", budget, "${value}L")
+        }
         buildConfigField(
             "String",
             "NAV_ASSIST_V2_URL",
@@ -67,4 +74,6 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.okhttp)
     testImplementation(libs.junit)
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

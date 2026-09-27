@@ -1,13 +1,13 @@
 # NavAssist v2（Android P0）
 
 > 历史文档：这里记录已经退役的 Android-only HMAC v2 设计，不再是当前配置
-> 指南。当前 Android/iOS 都使用 P-256 身份、UDP 7765 自动发现和 TCP 7766
-> `/v3/snapshot`；不需要共享 Token。当前跨平台契约见
-> [`PLATFORM_PARITY.md`](PLATFORM_PARITY.md)。
+> 指南。2026-09-19 核对：当前默认链路为未认证 UDP 4213；P-256 身份、UDP 7765
+> 发现和 HTTP `/v3/snapshot` 是保留的另一条链路。当前实现差异和后续设计见
+> [`NAVASSIST_SHARED_CONTRACT.md`](NAVASSIST_SHARED_CONTRACT.md)。本次仅修正文档。
 
 NavAssist v2 是独立于现有 WebSocket v1 的、默认关闭的单向导航数据出口。它只发送手机端的导航观测，不接收也不生成车辆控制命令。
 
-当前共享 JSON Schema 位于 [`protocol/navassist-v3.schema.json`](../protocol/navassist-v3.schema.json)。接收端应启用严格 schema 校验并拒绝未知字段；下文其余 v2/HMAC 内容仅用于历史追溯。
+历史 v3 Schema 位于 [`protocol/navassist-v3.schema.json`](../protocol/navassist-v3.schema.json)，其严格字段表尚未跟上当前工作树的 routeAvoid/路线通知扩展；不能据此宣称当前报文已通过验证。下一阶段须对齐固定版本的发送端、Schema 与接收端样例；下文其余 v2/HMAC 内容仅用于历史追溯。
 
 ## 启用方式与 App 内配置
 
@@ -98,7 +98,7 @@ lower_hex(HMAC-SHA256(UTF8(raw_http_body), UTF8(NAV_ASSIST_V2_TOKEN)))
 - `sequence`：同一 session 内从 1 开始严格递增；发送失败也不会复用序号。
 - `routeRevision`：路线成功发布、清除或失败失效时递增。路线重算期间 `navigationMode=recalculating` 且 `routeActive=false`。
 - `maneuverEventId`：对稳定 key `sessionId:routeRevision:stepIndex:maneuver` 做 SHA-256，取前 8 bytes、清除最高符号位，得到稳定的正 int64。同一 maneuver 的 5 Hz 快照复用同一个 ID；没有有效事件时固定为 `0`。
-- `validForMs`：当前 Android 发送 500 ms。C3XL 以自身 monotonic 接收时间执行控制 TTL；另外用 `sourceWallTimeMs` 限制跨进程重放窗口，因此静态检查必须确认手机与 C3XL 系统时间相差不超过约 1 秒。
+- `validForMs`：历史 v2 此处记录为 500 ms；2026-09-19 当前 Android/iOS 代码默认 1200 ms。C3XL 以自身 monotonic 接收时间执行快照 TTL，并用 `sourceWallTimeMs` 检查重放窗口；时钟容差需核对目标接收端版本。快照 TTL 不等于 SDK 源活性，后续失效规则见共享契约。
 
 接收端还应拒绝重复或倒退的 sequence、已经关闭的 session、旧 routeRevision，以及验签失败的消息。丢包只会形成 sequence gap，不应导致接收端等待补包。
 

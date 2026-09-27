@@ -110,7 +110,7 @@ class MainActivity : Activity(), AddressLookupView {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as NavigationForegroundService.LocalBinder).getService()
             runtimeService = service
-            service.refreshAMapConfiguration()
+            service.refreshAMapConfiguration()?.let(::toast)
             debugButton.isEnabled = true
             observeRuntime(service)
         }

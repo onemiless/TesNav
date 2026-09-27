@@ -33,6 +33,20 @@ class NavigationMappersTest {
     }
 
     @Test
+    fun `entrance links preserve direction without inventing it for straight or unknown icons`() {
+        for (icon in listOf(2, 4, 65)) {
+            assertEquals(NavigationManeuver.RAMP_LEFT, NavigationMappers.maneuver(icon, roadType = 10))
+        }
+        for (icon in listOf(3, 5, 66)) {
+            assertEquals(NavigationManeuver.RAMP_RIGHT, NavigationMappers.maneuver(icon, roadType = 10))
+        }
+        assertEquals(NavigationManeuver.STRAIGHT, NavigationMappers.maneuver(9, roadType = 10))
+        assertEquals(NavigationManeuver.NONE, NavigationMappers.maneuver(0, roadType = 10))
+        assertEquals(NavigationManeuver.UNKNOWN, NavigationMappers.maneuver(null, roadType = 10))
+        assertEquals(NavigationManeuver.SLIGHT_RIGHT, NavigationMappers.maneuver(5, roadType = 15))
+    }
+
+    @Test
     fun `road metadata accepts only documented values`() {
         assertEquals(0, NavigationMappers.validRoadClass(0))
         assertEquals(10, NavigationMappers.validRoadClass(10))

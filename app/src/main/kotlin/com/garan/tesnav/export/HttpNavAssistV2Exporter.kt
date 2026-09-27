@@ -1,11 +1,13 @@
 package com.garan.tesnav.export
 
 import com.garan.tesnav.model.NavigationState
+import com.garan.tesnav.model.OemVehicleLaneState
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -91,6 +93,12 @@ internal class HttpNavAssistV2Exporter(
     private val discoveryRetryMs: Long = DEFAULT_DISCOVERY_RETRY_MS,
     private val useUnauthenticatedUdp: Boolean = false,
     private val udpClient: NavAssistV3UdpClient = JvmUdpNavAssistV3Client(),
+    navigationSession: NavAssistV2Session? = null,
+    publisherDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val requireOwnerHandshake: Boolean = false,
+    private val ownerSettleMs: Long = 3_000L,
+    private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val feedbackElapsedMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
 ) : NavigationDataExporter {
     private val mutableConnectionState = MutableStateFlow(ExportConnectionState.STOPPED)
     override val connectionState: StateFlow<ExportConnectionState> = mutableConnectionState
@@ -100,16 +108,41 @@ internal class HttpNavAssistV2Exporter(
     val status: StateFlow<NavAssistV2ConnectionStatus> = mutableStatus
     private val mutableResolvedEndpoint = MutableStateFlow<String?>(null)
     val resolvedEndpoint: StateFlow<String?> = mutableResolvedEndpoint
+    private val mutableOemVehicleLaneState = MutableStateFlow(OemVehicleLaneState())
+    val oemVehicleLaneState: StateFlow<OemVehicleLaneState> = mutableOemVehicleLaneState
+    private val mutableLaneAnnouncement = MutableStateFlow<LaneAnnouncement?>(null)
+    val laneAnnouncement: StateFlow<LaneAnnouncement?> = mutableLaneAnnouncement
+    @Volatile private var completedAnnouncement: LaneAnnouncement? = null
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val session by lazy { NavAssistV2Session(validForMs = config.validForMs) }
+    @Synchronized
+    fun completeLaneAnnouncement(id: String, sessionId: String) {
+        val pending = mutableLaneAnnouncement.value ?: return
+        if (running && pending.id == id && pending.sessionId == sessionId &&
+            feedbackElapsedMs() - pending.receivedAtElapsedMs in 0L..1_000L) completedAnnouncement = pending
+    }
+
+    private fun withSpeechReceipt(snapshot: NavAssistV2Snapshot): NavAssistV2Snapshot {
+        val done = completedAnnouncement ?: return snapshot
+        val pending = mutableLaneAnnouncement.value ?: return snapshot
+        return if (done.id == pending.id && done.sessionId == snapshot.sessionId &&
+            feedbackElapsedMs() - pending.receivedAtElapsedMs in 0L..1_000L)
+            snapshot.copy(laneChangeSpeechCompletedId = done.id) else snapshot
+    }
+
+    private val scope = CoroutineScope(SupervisorJob() + publisherDispatcher)
+    private val session by lazy { navigationSession ?: NavAssistV2Session(validForMs = config.validForMs) }
 
     @Volatile private var running = false
     @Volatile private var rediscoveryRequested = false
     private var publisherJob: Job? = null
+    private var stopped = false
+    @Volatile private var ownerConfirmed = false
+    private var ownerReadyAtMs: Long? = null
+    private var lastOwnerAckMs: Long? = null
 
+    @Synchronized
     override fun start() {
-        if (running) return
+        if (running || stopped) return
         if (!config.isConfigured()) {
             mutableResolvedEndpoint.value = null
             if (config.hasValidLifetime() && config.baseUrl.isNotBlank()) {
@@ -142,21 +175,35 @@ internal class HttpNavAssistV2Exporter(
             publisherJob = scope.launch {
                 while (isActive && running) {
                     val startedAtNs = System.nanoTime()
-                    val state = stateProvider()
-                    if (state != null) {
-                        val snapshot = session.nextSnapshot(state, System.currentTimeMillis())
+                    val attempt = session.serializedSend {
+                        if (!isActive || !running) return@serializedSend null
+                        val state = stateProvider() ?: return@serializedSend null
+                        if (!isActive || !running) return@serializedSend null
+                        val snapshot = withSpeechReceipt(session.nextSnapshot(stateForOwner(state), System.currentTimeMillis()))
                         val body = CanonicalJson.encode(snapshot).toByteArray(Charsets.UTF_8)
-                        val host = runCatching { udpClient.send(body, snapshot.sessionId, snapshot.sequence) }.getOrNull()
-                        if (host != null) {
-                            mutableResolvedEndpoint.value = "udp://$host:4213"
-                            mutableLastError.value = null
-                            mutableConnectionState.value = ExportConnectionState.CONNECTED
-                            mutableStatus.value = NavAssistV2ConnectionStatus.ONLINE
-                        } else {
-                            mutableResolvedEndpoint.value = null
-                            mutableLastError.value = "未收到 C3XL UDP 确认"
-                            mutableConnectionState.value = ExportConnectionState.STARTING
-                            mutableStatus.value = NavAssistV2ConnectionStatus.SCANNING
+                        if (!isActive || !running) return@serializedSend null
+                        val ack = runCatching { udpClient.send(body, snapshot.sessionId, snapshot.sequence) }.getOrNull()
+                        recordOwnerResponse(ack != null)
+                        Pair(snapshot, ack)
+                    }
+                    if (attempt != null) {
+                        val ack = attempt.second
+                        publishIfRunning {
+                            mutableLaneAnnouncement.value = ack?.announcement
+                            if (ack?.announcement?.id != completedAnnouncement?.id) completedAnnouncement = null
+                            if (ack != null) {
+                                mutableResolvedEndpoint.value = "udp://${ack.host}:4213"
+                                mutableOemVehicleLaneState.value = ack.vehicleLane ?: OemVehicleLaneState()
+                                mutableLastError.value = null
+                                mutableConnectionState.value = ExportConnectionState.CONNECTED
+                                mutableStatus.value = NavAssistV2ConnectionStatus.ONLINE
+                            } else {
+                                mutableOemVehicleLaneState.value = OemVehicleLaneState()
+                                mutableResolvedEndpoint.value = null
+                                mutableLastError.value = "未收到 C3XL UDP 确认"
+                                mutableConnectionState.value = ExportConnectionState.STARTING
+                                mutableStatus.value = NavAssistV2ConnectionStatus.SCANNING
+                            }
                         }
                     }
                     val elapsedMs = (System.nanoTime() - startedAtNs) / NANOS_PER_MILLISECOND
@@ -172,9 +219,10 @@ internal class HttpNavAssistV2Exporter(
             while (isActive && running) {
                 if (rediscoveryRequested && config.usesDiscovery()) {
                     rediscoveryRequested = false
+                    resetOwnerHandshake()
                     endpoint = null
                     consecutivePostFailures = 0
-                    mutableResolvedEndpoint.value = null
+                    publishIfRunning { mutableResolvedEndpoint.value = null }
                 }
                 if (endpoint == null) {
                     endpoint = discoverEndpoint()
@@ -190,9 +238,11 @@ internal class HttpNavAssistV2Exporter(
                     PostResult.NO_STATE -> Unit
                     PostResult.SUCCESS -> {
                         consecutivePostFailures = 0
-                        mutableLastError.value = null
-                        mutableConnectionState.value = ExportConnectionState.CONNECTED
-                        mutableStatus.value = NavAssistV2ConnectionStatus.ONLINE
+                        publishIfRunning {
+                            mutableLastError.value = null
+                            mutableConnectionState.value = ExportConnectionState.CONNECTED
+                            mutableStatus.value = NavAssistV2ConnectionStatus.ONLINE
+                        }
                     }
                     PostResult.FAILURE -> {
                         consecutivePostFailures += 1
@@ -202,7 +252,7 @@ internal class HttpNavAssistV2Exporter(
                         if (config.usesDiscovery() && consecutivePostFailures >= POST_FAILURES_BEFORE_REDISCOVERY) {
                             endpoint = null
                             consecutivePostFailures = 0
-                            mutableResolvedEndpoint.value = null
+                            publishIfRunning { mutableResolvedEndpoint.value = null }
                         }
                     }
                 }
@@ -213,33 +263,45 @@ internal class HttpNavAssistV2Exporter(
     }
 
     override fun stop() {
-        running = false
-        rediscoveryRequested = false
-        publisherJob?.cancel()
-        publisherJob = null
-        httpClient.close()
-        scope.cancel()
-        mutableResolvedEndpoint.value = null
-        mutableConnectionState.value = ExportConnectionState.STOPPED
-        mutableStatus.value = if (config.hasValidLifetime()) {
-            NavAssistV2ConnectionStatus.ERROR
-        } else {
-            NavAssistV2ConnectionStatus.UNCONFIGURED
+        synchronized(this) {
+            if (stopped) return
+            stopped = true
+            running = false
+            mutableLaneAnnouncement.value = null
+            completedAnnouncement = null
+            rediscoveryRequested = false
+            publisherJob?.cancel()
+            publisherJob = null
+            scope.cancel()
+            mutableResolvedEndpoint.value = null
+            mutableOemVehicleLaneState.value = OemVehicleLaneState()
+            mutableConnectionState.value = ExportConnectionState.STOPPED
+            mutableStatus.value = if (config.hasValidLifetime()) {
+                NavAssistV2ConnectionStatus.ERROR
+            } else {
+                NavAssistV2ConnectionStatus.UNCONFIGURED
+            }
         }
+        httpClient.close()
     }
 
     /** Drops a cached LAN address so navigation starts against the C3XL's current Wi-Fi address. */
+    @Synchronized
     internal fun requestRediscovery() {
         if (!running || !config.usesDiscovery()) return
         rediscoveryRequested = true
+        resetOwnerHandshake()
         mutableResolvedEndpoint.value = null
         mutableConnectionState.value = ExportConnectionState.STARTING
         mutableStatus.value = NavAssistV2ConnectionStatus.SCANNING
     }
 
     private fun discoverEndpoint(): ResolvedNavAssistEndpoint? {
-        mutableConnectionState.value = ExportConnectionState.STARTING
-        mutableStatus.value = NavAssistV2ConnectionStatus.SCANNING
+        if (!running) return null
+        publishIfRunning {
+            mutableConnectionState.value = ExportConnectionState.STARTING
+            mutableStatus.value = NavAssistV2ConnectionStatus.SCANNING
+        }
         return when (val result = endpointDiscovery.discover()) {
             is NavAssistV2DiscoveryResult.Found -> discoveryEndpoint(result.sourceHost)
                 ?.let { ResolvedNavAssistEndpoint(it, result.deviceId) }
@@ -247,9 +309,11 @@ internal class HttpNavAssistV2Exporter(
                 ?: failDiscovery("C3XL 返回了无效地址")
             NavAssistV2DiscoveryResult.NotFound -> null
             NavAssistV2DiscoveryResult.MultipleAuthenticatedHosts -> {
-                mutableLastError.value = "发现多个已认证 C3XL，已拒绝自动选择"
-                mutableConnectionState.value = ExportConnectionState.ERROR
-                mutableStatus.value = NavAssistV2ConnectionStatus.MULTIPLE_DEVICES
+                publishIfRunning {
+                    mutableLastError.value = "发现多个已认证 C3XL，已拒绝自动选择"
+                    mutableConnectionState.value = ExportConnectionState.ERROR
+                    mutableStatus.value = NavAssistV2ConnectionStatus.MULTIPLE_DEVICES
+                }
                 null
             }
             is NavAssistV2DiscoveryResult.Failed -> failDiscovery(result.reason)
@@ -257,23 +321,36 @@ internal class HttpNavAssistV2Exporter(
     }
 
     private fun failDiscovery(reason: String): ResolvedNavAssistEndpoint? {
-        mutableLastError.value = reason
-        mutableConnectionState.value = ExportConnectionState.ERROR
-        mutableStatus.value = NavAssistV2ConnectionStatus.ERROR
+        publishIfRunning {
+            mutableLastError.value = reason
+            mutableConnectionState.value = ExportConnectionState.ERROR
+            mutableStatus.value = NavAssistV2ConnectionStatus.ERROR
+        }
         return null
     }
 
     private fun publishDiscovered(endpoint: ResolvedNavAssistEndpoint) {
-        mutableLastError.value = null
-        mutableResolvedEndpoint.value = endpoint.url.toString()
-        mutableConnectionState.value = ExportConnectionState.STARTING
-        mutableStatus.value = NavAssistV2ConnectionStatus.DISCOVERED
+        publishIfRunning {
+            mutableLastError.value = null
+            mutableResolvedEndpoint.value = endpoint.url.toString()
+            mutableConnectionState.value = ExportConnectionState.STARTING
+            mutableStatus.value = NavAssistV2ConnectionStatus.DISCOVERED
+        }
     }
 
-    private fun postLatest(endpoint: ResolvedNavAssistEndpoint): PostResult {
-        val state = stateProvider() ?: return PostResult.NO_STATE
-        return runCatching {
-            val snapshot = session.nextSnapshot(state, System.currentTimeMillis())
+    /** Serialize result publication with stop; never hold this monitor across network calls. */
+    private inline fun publishIfRunning(update: () -> Unit) {
+        synchronized(this) {
+            if (running) update()
+        }
+    }
+
+    private fun postLatest(endpoint: ResolvedNavAssistEndpoint): PostResult = session.serializedSend {
+        if (!running) return@serializedSend PostResult.NO_STATE
+        val state = stateProvider() ?: return@serializedSend PostResult.NO_STATE
+        if (!running) return@serializedSend PostResult.NO_STATE
+        runCatching {
+            val snapshot = session.nextSnapshot(stateForOwner(state), System.currentTimeMillis())
             val body = CanonicalJson.encode(snapshot)
             val bodyBytes = body.toByteArray(Charsets.UTF_8)
             val signature = identity.sign(
@@ -281,16 +358,59 @@ internal class HttpNavAssistV2Exporter(
                     endpoint.deviceId, identity.keyId, NavAssistV2Protocol.ENDPOINT_PATH, bodyBytes,
                 ),
             )
+            if (!running) return@serializedSend PostResult.NO_STATE
             httpClient.post(endpoint.url, body, identity.keyId, signature)
         }.fold(
-            onSuccess = { PostResult.SUCCESS },
+            onSuccess = { recordOwnerResponse(true); PostResult.SUCCESS },
             onFailure = { error ->
-                mutableLastError.value = describeHttpFailure(endpoint.url, error)
-                mutableConnectionState.value = ExportConnectionState.ERROR
-                mutableStatus.value = NavAssistV2ConnectionStatus.ERROR
+                recordOwnerResponse(false)
+                publishIfRunning {
+                    mutableLastError.value = describeHttpFailure(endpoint.url, error)
+                    mutableConnectionState.value = ExportConnectionState.ERROR
+                    mutableStatus.value = NavAssistV2ConnectionStatus.ERROR
+                }
                 PostResult.FAILURE
             },
         )
+    }
+
+    @Synchronized
+    private fun stateForOwner(state: NavigationState): NavigationState {
+        if (requireOwnerHandshake && useUnauthenticatedUdp && ownerConfirmed && !ownerAckFresh()) {
+            resetOwnerHandshake()
+        }
+        if (!requireOwnerHandshake || ownerConfirmed) return state
+        // Local C3 rejects source age > 2000 ms and future skew > 1000 ms.
+        // Wait after acquiring the shared send lock so an old unacknowledged packet expires.
+        if (ownerReadyAtMs == null) ownerReadyAtMs = monotonicMs() + ownerSettleMs
+        return state.copy(navAssistControlAllowed = false)
+    }
+
+    @Synchronized
+    private fun recordOwnerResponse(accepted: Boolean) {
+        if (!running) return
+        if (!accepted) {
+            // One lost UDP reply does not establish a different sender. Retain
+            // this confirmed owner only within the existing snapshot lifetime.
+            // Feedback and speech receipts still clear immediately in the send loop.
+            if (!(useUnauthenticatedUdp && ownerConfirmed && ownerAckFresh())) resetOwnerHandshake()
+        } else {
+            lastOwnerAckMs = monotonicMs()
+            ownerConfirmed = !requireOwnerHandshake || ownerSettleMs == 0L || ownerReadyAtMs?.let { monotonicMs() > it } == true
+        }
+    }
+
+    private fun ownerAckFresh(): Boolean {
+        val ackMs = lastOwnerAckMs ?: return false
+        val ageMs = monotonicMs() - ackMs
+        return ageMs >= 0L && ageMs < config.validForMs
+    }
+
+    @Synchronized
+    private fun resetOwnerHandshake() {
+        ownerConfirmed = false
+        ownerReadyAtMs = null
+        lastOwnerAckMs = null
     }
 
     internal fun snapshotEndpoint(baseUrl: String): HttpUrl? {

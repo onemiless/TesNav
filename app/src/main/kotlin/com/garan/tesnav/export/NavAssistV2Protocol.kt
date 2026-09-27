@@ -73,6 +73,7 @@ data class NavAssistV2Snapshot(
     val location: NavAssistV2Location?,
     val guidance: NavAssistV2Guidance?,
     val lanes: NavAssistV2Lanes?,
+    val laneChangeSpeechCompletedId: String? = null,
 )
 
 data class NavAssistV2Location(
@@ -98,6 +99,11 @@ data class NavAssistV2Guidance(
     val roadClass: Int?,
     val roadType: Int?,
     val advisorySpeedMps: Float?,
+    val parallelRoadStatus: String?,
+    val elevatedRoadStatus: String?,
+    val routeNoticeType: String?,
+    val routeNoticeDistanceM: Int?,
+    val routeNoticeObservedAtMs: Long?,
 )
 
 data class NavAssistV2Lanes(
@@ -110,14 +116,19 @@ data class NavAssistV2Lane(
     val allowedActions: List<String>,
     val recommended: Boolean,
     val recommendedActions: List<String>,
+    val routeAvoid: Boolean,
 )
 
-/** Owns the session UUID and strictly monotonic sequence for one exporter lifetime. */
+/** Owns the session UUID and sequence; the navigation service retains it across exporter rebuilds. */
 class NavAssistV2Session(
     val sessionId: String = UUID.randomUUID().toString(),
     private val validForMs: Long = NavAssistV2Protocol.DEFAULT_VALID_FOR_MS,
 ) {
     private val sequence = AtomicLong(0L)
+    private val sendLock = Any()
+
+    // Shared across exporter instances: an old in-flight send must finish before a replacement sends.
+    internal fun <T> serializedSend(block: () -> T): T = synchronized(sendLock, block)
 
     init {
         require(sessionId.isNotBlank()) { "sessionId must not be blank" }
@@ -159,17 +170,29 @@ object NavAssistV2Mapper {
                 maneuverDistanceM = state.nextTurnDistanceMeters?.takeIf {
                     it in 0..NavAssistV2Protocol.MAX_MANEUVER_DISTANCE_M
                 },
-                nextManeuver = null,
-                nextManeuverDistanceM = null,
+                nextManeuver = state.nextManeuver
+                    .takeUnless { it == com.garan.tesnav.model.NavigationManeuver.NONE }
+                    ?.let(NavigationMappers::maneuverWireValue),
+                nextManeuverDistanceM = state.nextManeuverDistanceMeters?.takeIf {
+                    state.nextManeuver != com.garan.tesnav.model.NavigationManeuver.NONE &&
+                        it in 0..NavAssistV2Protocol.MAX_MANEUVER_DISTANCE_M
+                },
                 currentRoad = validRoadName(state.currentRoad),
                 nextRoad = validRoadName(state.nextRoad),
                 roadClass = NavigationMappers.validRoadClass(state.currentRoadClass),
                 roadType = NavigationMappers.validRoadType(state.currentRoadType),
                 // Camera enforcement limits are not advisory corner speeds.
                 advisorySpeedMps = null,
+                parallelRoadStatus = state.parallelRoadStatus.wireValue(),
+                elevatedRoadStatus = state.elevatedRoadStatus.wireValue(),
+                routeNoticeType = state.routeNotice?.type?.wireValue(),
+                routeNoticeDistanceM = state.routeNotice?.distanceMeters?.takeIf {
+                    it in 0..NavAssistV2Protocol.MAX_MANEUVER_DISTANCE_M
+                },
+                routeNoticeObservedAtMs = state.routeNotice?.observedAtMs?.takeIf { it > 0L },
             )
         }
-        val routeActive = state.routePlanned &&
+        val routeActive = state.navAssistControlAllowed && state.routePlanned &&
             !state.routeRecalculating &&
             state.navigationMode == NavigationMode.REALTIME &&
             state.routeMatched == true &&
@@ -201,7 +224,10 @@ object NavAssistV2Mapper {
             coordinateSystem = NavAssistV2Protocol.COORDINATE_SYSTEM,
             location = location,
             guidance = guidance,
-            lanes = lanes(state),
+            // Only lane callbacks observed after keyed guidance confirmed the
+            // currently installed path can become C3 route facts.
+            lanes = if (state.lanesPathId != null && state.lanesPathId == state.acceptedPathId &&
+                state.guidancePathId == state.acceptedPathId && !state.routeRecalculating) lanes(state) else null,
         )
     }
 
@@ -260,6 +286,9 @@ object NavAssistV2Mapper {
                             allowedActions = allowedActions.map { it.name }.distinct().take(16),
                             recommended = recommendedActions.isNotEmpty(),
                             recommendedActions = recommendedActions.map { it.name }.distinct().take(16),
+                            // AMap's F/255-style foreground value means this lane is not selected
+                            // for the current route. It is not a legal or physical crossing veto.
+                            routeAvoid = lane.prohibited,
                         )
                     }
                     .toList(),
@@ -268,6 +297,24 @@ object NavAssistV2Mapper {
 
     private fun validRoadName(value: String?): String? = value?.takeIf {
         it.isNotBlank() && it.length <= NavAssistV2Protocol.MAX_ROAD_NAME_LENGTH
+    }
+
+    private fun com.garan.tesnav.model.RoadLayerStatus.wireValue(): String? = when (this) {
+        com.garan.tesnav.model.RoadLayerStatus.UNKNOWN -> null
+        com.garan.tesnav.model.RoadLayerStatus.MAIN -> "main"
+        com.garan.tesnav.model.RoadLayerStatus.SIDE -> "side"
+    }
+
+    private fun com.garan.tesnav.model.RouteNoticeType.wireValue(): String? = when (this) {
+        com.garan.tesnav.model.RouteNoticeType.NONE -> null
+        com.garan.tesnav.model.RouteNoticeType.RESTRICTED_AREA -> "restricted_area"
+        com.garan.tesnav.model.RouteNoticeType.FORBIDDEN_AREA -> "forbidden_area"
+        com.garan.tesnav.model.RouteNoticeType.ROAD_CLOSED -> "road_closed"
+        com.garan.tesnav.model.RouteNoticeType.CONGESTION -> "congestion"
+        com.garan.tesnav.model.RouteNoticeType.DISPATCH -> "dispatch"
+        com.garan.tesnav.model.RouteNoticeType.ROUTE_CHANGED -> "route_changed"
+        com.garan.tesnav.model.RouteNoticeType.GPS_WEAK -> "gps_weak"
+        com.garan.tesnav.model.RouteNoticeType.UNKNOWN -> "unknown"
     }
 }
 

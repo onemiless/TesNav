@@ -3,6 +3,63 @@ import XCTest
 @testable import TesNavIOS
 
 final class NavAssistTests: XCTestCase {
+  func testUDPAckAcceptsCoreAndC3FeedbackFixture() throws {
+    let core = #"{"messageType":"navassist_udp_ack","schemaVersion":3,"sessionId":"test","sequence":1}"#
+    XCTAssertTrue(UnauthenticatedNavAssistUDP.matchesAck(Data(core.utf8), sessionID: "test", sequence: 1))
+    let fixtureURL = try XCTUnwrap(Bundle(for: NavAssistTests.self).url(
+      forResource: "c3-vehicle-lane-ack", withExtension: "json"
+    ))
+    let fixture = try Data(contentsOf: fixtureURL)
+    XCTAssertEqual(fixture.count, 592)
+    XCTAssertTrue(UnauthenticatedNavAssistUDP.matchesAck(
+      fixture, sessionID: "00000000-0000-0000-0000-000000000001", sequence: 1
+    ))
+    XCTAssertFalse(UnauthenticatedNavAssistUDP.matchesAck(fixture, sessionID: "other", sequence: 1))
+    XCTAssertFalse(UnauthenticatedNavAssistUDP.matchesAck(
+      fixture, sessionID: "00000000-0000-0000-0000-000000000001", sequence: 2
+    ))
+  }
+
+  func testUDPAckSizeAndOptionalFeedbackBoundaries() {
+    let core = #"{"messageType":"navassist_udp_ack","schemaVersion":3,"sessionId":"test","sequence":1}"#
+    for size in [512, 592, 2_048, 2_049] {
+      let payload = Data((core + String(repeating: " ", count: size - core.utf8.count)).utf8)
+      XCTAssertEqual(UnauthenticatedNavAssistUDP.matchesAck(payload, sessionID: "test", sequence: 1), size <= 2_048)
+    }
+    for feedback in ["null", "{}", "false", "[]"] {
+      let payload = Data((core.dropLast() + ",\"vehicleLane\":" + feedback + "}").utf8)
+      XCTAssertTrue(UnauthenticatedNavAssistUDP.matchesAck(payload, sessionID: "test", sequence: 1))
+    }
+    let unknown = Data((core.dropLast() + ",\"unexpected\":true}").utf8)
+    XCTAssertFalse(UnauthenticatedNavAssistUDP.matchesAck(unknown, sessionID: "test", sequence: 1))
+    XCTAssertFalse(UnauthenticatedNavAssistUDP.matchesAck(Data([0xff]), sessionID: "test", sequence: 1))
+  }
+
+  func testUDPAckRejectsCoercedAndOutOfRangeCoreNumbers() {
+    for number in ["true", "false", "null", #""1""#, "1.0", "1e0", "1.5", "-1", "0", "9223372036854775808"] {
+      let text = #"{"messageType":"navassist_udp_ack","schemaVersion":3,"sessionId":"test","sequence":\#(number)}"#
+      XCTAssertFalse(UnauthenticatedNavAssistUDP.matchesAck(Data(text.utf8), sessionID: "test", sequence: 1), number)
+    }
+    for number in ["true", #""3""#, "3.5", "4"] {
+      let text = #"{"messageType":"navassist_udp_ack","schemaVersion":\#(number),"sessionId":"test","sequence":1}"#
+      XCTAssertFalse(UnauthenticatedNavAssistUDP.matchesAck(Data(text.utf8), sessionID: "test", sequence: 1), number)
+    }
+    let maximum = #"{"messageType":"navassist_udp_ack","schemaVersion":3,"sessionId":"test","sequence":9223372036854775807}"#
+    XCTAssertTrue(UnauthenticatedNavAssistUDP.matchesAck(Data(maximum.utf8), sessionID: "test", sequence: UInt64(Int64.max)))
+  }
+
+  func testUDPAckRejectsDuplicateKeysAndTrailingContent() {
+    let core = #"{"messageType":"navassist_udp_ack","schemaVersion":3,"sessionId":"test","sequence":1}"#
+    for extra in [#", "sequence":1"#, #", "\u0073equence":1"#,
+                  #", "vehicleLane":{"position":"unknown","position":"single"}"#,
+                  #", "vehicleLane":{"position":"unknown",}"#, ","] {
+      XCTAssertFalse(UnauthenticatedNavAssistUDP.matchesAck(
+        Data((core.dropLast() + extra + "}").utf8), sessionID: "test", sequence: 1
+      ), extra)
+    }
+    XCTAssertFalse(UnauthenticatedNavAssistUDP.matchesAck(Data((core + "{}").utf8), sessionID: "test", sequence: 1))
+  }
+
   func testConnectionDisplayKeepsUnchangedGuidanceReadyWhileRealtimeRouteRemainsMatched() {
     var state = NavigationObservation()
     state.mode = "realtime"

@@ -5,6 +5,9 @@ import com.garan.tesnav.model.LaneState
 import com.garan.tesnav.model.NavigationManeuver
 import com.garan.tesnav.model.NavigationMode
 import com.garan.tesnav.model.NavigationState
+import com.garan.tesnav.model.RoadLayerStatus
+import com.garan.tesnav.model.RouteNoticeState
+import com.garan.tesnav.model.RouteNoticeType
 import com.google.gson.Gson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,6 +16,41 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NavAssistV2ProtocolTest {
+    @Test
+    fun `unconfirmed source exports inactive without replacing the route event identity`() {
+        val session = NavAssistV2Session(sessionId = "guarded-session")
+        val ready = activeState()
+        val first = session.nextSnapshot(ready, 4_000)
+        val blocked = session.nextSnapshot(ready.copy(navAssistControlAllowed = false), 4_200)
+        val rearmed = session.nextSnapshot(ready, 4_400)
+        assertTrue(first.routeActive)
+        assertFalse(blocked.routeActive)
+        assertEquals(0L, blocked.maneuverEventId)
+        assertEquals(first.sessionId, blocked.sessionId)
+        assertEquals(first.routeRevision, blocked.routeRevision)
+        assertEquals(first.maneuverEventId, rearmed.maneuverEventId)
+        assertEquals(3L, rearmed.sequence)
+    }
+
+    @Test
+    fun `whole snapshots match shared contract fixtures`() {
+        val states = linkedMapOf(
+            "idle" to NavigationState(),
+            "planned" to activeState().copy(navigationMode = NavigationMode.ROUTE_PLANNED),
+            "realtime" to activeState(),
+            "simulation" to activeState().copy(navigationMode = NavigationMode.SIMULATION),
+            "recalculating" to activeState().copy(routeRecalculating = true),
+            "arrived" to activeState().copy(navigationMode = NavigationMode.ARRIVED),
+            "unmatched" to activeState().copy(routeMatched = false),
+        )
+        val snapshots = states.mapValues { (_, state) ->
+            NavAssistV2Mapper.snapshot(state, "contract-session", 9L, 4_000L, 500L)
+        }
+        val expected = requireNotNull(javaClass.getResourceAsStream("/navassist/android-snapshots.json"))
+            .bufferedReader(Charsets.UTF_8).use { it.readText() }
+        assertEquals(expected.trim(), CanonicalJson.encode(snapshots))
+    }
+
     @Test
     fun `default snapshot lifetime tolerates normal LAN jitter`() {
         assertEquals(1_200L, NavAssistV2Protocol.DEFAULT_VALID_FOR_MS)
@@ -83,14 +121,38 @@ class NavAssistV2ProtocolTest {
         assertEquals(3_000L, snapshot.lanes?.observedAtMs)
         assertEquals(4, snapshot.location?.currentStepIndex)
         assertEquals("turn_right", snapshot.guidance?.maneuver)
+        assertEquals("turn_left", snapshot.guidance?.nextManeuver)
+        assertEquals(480, snapshot.guidance?.nextManeuverDistanceM)
         assertEquals(6, snapshot.guidance?.roadType)
+        assertEquals("main", snapshot.guidance?.parallelRoadStatus)
+        assertEquals("side", snapshot.guidance?.elevatedRoadStatus)
+        assertEquals("road_closed", snapshot.guidance?.routeNoticeType)
+        assertEquals(350, snapshot.guidance?.routeNoticeDistanceM)
         assertNull(snapshot.guidance?.advisorySpeedMps)
         assertEquals(listOf(0, 1), snapshot.lanes?.items?.map { it.index })
         assertEquals(listOf("STRAIGHT", "RIGHT"), snapshot.lanes?.items?.last()?.allowedActions)
+        assertTrue(snapshot.lanes?.items?.first()?.routeAvoid == true)
 
         val body = CanonicalJson.encode(snapshot)
         assertFalse(body.contains("advisorySpeedMps"))
-        assertFalse(body.contains("nextManeuver"))
+        assertTrue(body.contains("nextManeuver"))
+    }
+
+    @Test
+    fun `unkeyed lane callback stays in App state without entering C3 snapshot`() {
+        val state = activeState().copy(lanesPathId = null)
+        val snapshot = NavAssistV2Mapper.snapshot(state, "test-session", 9L, 4_000L, 500L)
+        assertTrue(state.lanes.isNotEmpty())
+        assertTrue(snapshot.routeActive)
+        assertNull(snapshot.lanes)
+    }
+
+    @Test
+    fun `lane callback is exported only for its confirmed current path`() {
+        val bound = activeState().copy(acceptedPathId = 42L, guidancePathId = 42L, lanesPathId = 42L)
+        assertEquals(2, NavAssistV2Mapper.snapshot(bound, "test-session", 9L, 4_000L, 500L).lanes?.items?.size)
+        assertNull(NavAssistV2Mapper.snapshot(bound.copy(acceptedPathId = 43L), "test-session", 9L, 4_000L, 500L).lanes)
+        assertNull(NavAssistV2Mapper.snapshot(bound.copy(routeRecalculating = true), "test-session", 9L, 4_000L, 500L).lanes)
     }
 
     @Test
@@ -244,6 +306,7 @@ class NavAssistV2ProtocolTest {
     }
 
     private fun activeState() = NavigationState(
+        navAssistControlAllowed = true,
         navigationMode = NavigationMode.REALTIME,
         latitude = 31.2304,
         longitude = 121.4737,
@@ -262,20 +325,38 @@ class NavAssistV2ProtocolTest {
                 recommendedActions = listOf(LaneAction.RIGHT),
                 rawRecommendedLaneType = 3,
             ),
-            LaneState(index = 0, allowedActions = listOf(LaneAction.STRAIGHT), rawLaneType = 0),
+            LaneState(
+                index = 0,
+                allowedActions = listOf(LaneAction.STRAIGHT),
+                rawLaneType = 0,
+                prohibited = true,
+            ),
         ),
         routePlanned = true,
         locationObservedAtMs = 1_000L,
         guidanceObservedAtMs = 2_000L,
         lanesObservedAtMs = 3_000L,
+        unkeyedRouteFactsConfirmed = true,
+        acceptedPathId = 42L,
+        guidancePathId = 42L,
+        lanesPathId = 42L,
         currentStepIndex = 4,
         currentLinkIndex = 2,
         currentPointIndex = 8,
         routeMatched = true,
         maneuver = NavigationManeuver.TURN_RIGHT,
+        nextManeuver = NavigationManeuver.TURN_LEFT,
+        nextManeuverDistanceMeters = 480,
         guidanceStepIndex = 4,
         currentRoadClass = 0,
         currentRoadType = 6,
+        parallelRoadStatus = RoadLayerStatus.MAIN,
+        elevatedRoadStatus = RoadLayerStatus.SIDE,
+        routeNotice = RouteNoticeState(
+            type = RouteNoticeType.ROAD_CLOSED,
+            distanceMeters = 350,
+            observedAtMs = 2_100L,
+        ),
         routeRevision = 7L,
     )
 

@@ -12,6 +12,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -30,9 +31,14 @@ import com.amap.api.navi.enums.AMapNaviViewShowMode
 import com.amap.api.navi.view.OverviewButtonView
 import com.garan.tesnav.model.NavigationMode
 import com.garan.tesnav.model.NavigationState
+import com.garan.tesnav.model.OemVehicleLaneState
+import com.garan.tesnav.model.withDisplayExpiry
+import com.garan.tesnav.export.NAVASSIST_UDP_RECEIVE_WINDOW_MS
+import com.garan.tesnav.export.NavAssistV2Protocol
 import com.garan.tesnav.model.RouteChoice
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.ui.NavigationStateDialog
+import com.garan.tesnav.ui.LaneGuidanceView
 import com.garan.tesnav.ui.SettingsDialog
 import com.garan.tesnav.config.AmapConfiguration
 import kotlinx.coroutines.CoroutineScope
@@ -57,12 +63,19 @@ class NavigationActivity : Activity() {
     private lateinit var settingsButton: ImageButton
     private lateinit var debugButton: ImageButton
     private lateinit var overviewButton: OverviewButtonView
+    private lateinit var laneGuidanceView: LaneGuidanceView
 
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var runtimeService: NavigationForegroundService? = null
     private var bindRequested = false
     private var stateJob: Job? = null
+    private var oemLaneJob: Job? = null
     private var currentState = NavigationState()
+    private var currentOemLaneState = OemVehicleLaneState()
+    // One configured send interval plus the next ACK receive window; display only.
+    private val feedbackDisplayBudgetMs = BuildConfig.NAV_ASSIST_V2_INTERVAL_MS
+        .coerceIn(NavAssistV2Protocol.MIN_INTERVAL_MS, Long.MAX_VALUE - NAVASSIST_UDP_RECEIVE_WINDOW_MS) +
+        NAVASSIST_UDP_RECEIVE_WINDOW_MS
     private var previousMode: NavigationMode? = null
     private var routeRequestSent = false
     private var renderedRouteChoices: List<RouteChoice> = emptyList()
@@ -113,6 +126,9 @@ class NavigationActivity : Activity() {
         setRouteListButtonShow(false)
         setSettingMenuEnabled(false)
         setBroadcastModeEnabled(false)
+        // Keep SDK lane guidance enabled even though the stock navigation layout is hidden.
+        // We consume showLaneInfo ourselves in LaneGuidanceView.
+        setLaneInfoShow(true)
         setRefreshButtonEnabled(false)
         setNaviStatusBarEnabled(false)
         setTilt(0)
@@ -164,10 +180,17 @@ class NavigationActivity : Activity() {
         overviewButton = OverviewButtonView(this).apply {
             contentDescription = "路线全览"
         }
+        laneGuidanceView = LaneGuidanceView(this, feedbackDisplayBudgetMs)
     }
 
     private fun createRootView(): FrameLayout = FrameLayout(this).apply {
         addView(naviView, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        addView(laneGuidanceView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            topMargin = dp(22)
+            marginStart = dp(72)
+            marginEnd = dp(72)
+        })
         addView(routeActions, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             marginStart = dp(12)
@@ -255,11 +278,18 @@ class NavigationActivity : Activity() {
         stateJob = activityScope.launch {
             service.stateStore.state.collect(::renderNavigationState)
         }
+        oemLaneJob = activityScope.launch {
+            service.oemVehicleLaneState.withDisplayExpiry(feedbackDisplayBudgetMs, SystemClock::elapsedRealtime).collect { state ->
+                currentOemLaneState = state
+                laneGuidanceView.render(currentState, currentOemLaneState)
+            }
+        }
     }
 
     private fun renderNavigationState(state: NavigationState) {
         val oldMode = previousMode
         currentState = state
+        laneGuidanceView.render(state, currentOemLaneState)
         when (state.navigationMode) {
             NavigationMode.IDLE -> {
                 routeActions.visibility = View.GONE
@@ -377,6 +407,10 @@ class NavigationActivity : Activity() {
     private fun cancelRuntimeObservation() {
         stateJob?.cancel()
         stateJob = null
+        oemLaneJob?.cancel()
+        oemLaneJob = null
+        currentOemLaneState = OemVehicleLaneState()
+        if (::laneGuidanceView.isInitialized) laneGuidanceView.render(currentState, currentOemLaneState)
     }
 
     override fun onStart() {
@@ -388,6 +422,7 @@ class NavigationActivity : Activity() {
         super.onResume()
         if (!::naviView.isInitialized) return
         naviView.onResume()
+        laneGuidanceView.render(currentState, currentOemLaneState)
         val options = naviView.viewOptions
         options.setTilt(0)
         naviView.setViewOptions(options)

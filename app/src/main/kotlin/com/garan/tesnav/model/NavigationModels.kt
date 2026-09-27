@@ -5,6 +5,18 @@ import kotlin.jvm.Transient
 enum class NavigationMode { IDLE, ROUTE_PLANNED, SIMULATION, REALTIME, ARRIVED }
 enum class TrafficStatus { UNKNOWN, SMOOTH, SLOW, CONGESTED, SEVERELY_CONGESTED }
 enum class WarningLevel { NONE, WARNING, CRITICAL }
+enum class RoadLayerStatus { UNKNOWN, MAIN, SIDE }
+enum class RouteNoticeType {
+    NONE,
+    RESTRICTED_AREA,
+    FORBIDDEN_AREA,
+    ROAD_CLOSED,
+    CONGESTION,
+    DISPATCH,
+    ROUTE_CHANGED,
+    GPS_WEAK,
+    UNKNOWN,
+}
 enum class LaneAction { STRAIGHT, LEFT, RIGHT, U_TURN, LEFT_U_TURN, RIGHT_U_TURN, BUS, VARIABLE, DEDICATED, TIDAL, UNKNOWN }
 enum class CameraType { SPEED, SURVEILLANCE, TRAFFIC_LIGHT, VIOLATION, BUS_LANE, EMERGENCY, BICYCLE, INTERVAL_START, INTERVAL_END, FLOW_SPEED, ETC, UNKNOWN }
 enum class NavigationManeuver {
@@ -51,6 +63,7 @@ data class LaneState(
     val rawLaneType: Int = -1,
     val recommendedActions: List<LaneAction> = emptyList(),
     @Transient val rawRecommendedLaneType: Int? = null,
+    @Transient val prohibited: Boolean = false,
 )
 
 data class CameraState(
@@ -63,6 +76,16 @@ data class CameraState(
     val intervalRemainDistanceMeters: Int? = null,
     val averageSpeedKph: Int? = null,
     val reasonableSpeedKph: Int? = null,
+)
+
+data class RouteNoticeState(
+    val type: RouteNoticeType = RouteNoticeType.NONE,
+    val distanceMeters: Int? = null,
+    val roadName: String? = null,
+    val reason: String? = null,
+    val subtitle: String? = null,
+    val success: Boolean = false,
+    val observedAtMs: Long = 0L,
 )
 
 /** Schema-compatible latest-state snapshot consumed by Comma. */
@@ -99,6 +122,16 @@ data class NavigationState(
     // NavAssist v2-only observations. They are transient so the legacy v1 Gson
     // payload remains schema compatible with existing receivers.
     @Transient val locationObservedAtMs: Long? = null,
+    @Transient val locationReceivedElapsedMs: Long? = null,
+    @Transient val guidanceReceivedElapsedMs: Long? = null,
+    // Matching SDK callback delivery, separate from changed guidance/progress above.
+    @Transient val guidanceCallbackElapsedMs: Long? = null,
+    @Transient val acceptedPathId: Long? = null,
+    @Transient val guidancePathId: Long? = null,
+    @Transient val lanesPathId: Long? = null,
+    @Transient val unkeyedRouteFactsConfirmed: Boolean = false,
+    @Transient val navAssistControlAllowed: Boolean = false,
+    @Transient val navAssistSourceStatus: String = "unconfirmed",
     @Transient val guidanceObservedAtMs: Long? = null,
     @Transient val lanesObservedAtMs: Long? = null,
     @Transient val routeObservedAtMs: Long? = null,
@@ -107,12 +140,19 @@ data class NavigationState(
     @Transient val currentPointIndex: Int? = null,
     @Transient val routeMatched: Boolean? = null,
     @Transient val maneuver: NavigationManeuver = NavigationManeuver.NONE,
+    @Transient val nextManeuver: NavigationManeuver = NavigationManeuver.NONE,
+    @Transient val nextManeuverDistanceMeters: Int? = null,
     @Transient val guidanceStepIndex: Int? = null,
     @Transient val currentRoadClass: Int? = null,
     @Transient val currentRoadType: Int? = null,
+    @Transient val parallelRoadStatus: RoadLayerStatus = RoadLayerStatus.UNKNOWN,
+    @Transient val elevatedRoadStatus: RoadLayerStatus = RoadLayerStatus.UNKNOWN,
+    @Transient val routeNotice: RouteNoticeState? = null,
     @Transient val routeRevision: Long = 0L,
     @Transient val routeRecalculating: Boolean = false,
     @Transient val routeChoices: List<RouteChoice> = emptyList(),
     @Transient val selectedRouteId: Int? = null,
     @Transient val speechEnabled: Boolean = true,
+    @Transient val laneCallbackCount: Int = 0,
+    @Transient val laneLastEvent: String? = null,
 )

@@ -1,5 +1,11 @@
 # Android / iOS navigation parity
 
+Design update (2026-09-19): this is a product parity target, not a statement
+that both implementations already match. Current differences and the proposed
+source-health, session-ownership, ACK-size and recovery rules are recorded in
+[`NAVASSIST_SHARED_CONTRACT.md`](NAVASSIST_SHARED_CONTRACT.md). This update
+changes documentation only.
+
 TesNav treats Android and iOS as two clients of one navigation contract. UI
 layout may follow each platform, but the following user and NavAssist behavior
 must remain equivalent:
@@ -18,7 +24,8 @@ must remain equivalent:
 - visible C3XL source address and connection status without a required token or
   pairing step;
 - GCJ-02 route-relative location, route matching, route revisions, monotonic
-  sequence numbers, stable maneuver event IDs, and 500 ms snapshot lifetime;
+  sequence numbers, stable maneuver event IDs, and the current 1200 ms default
+  snapshot lifetime (transport TTL does not prove that SDK observations are fresh);
 - the same maneuver vocabulary, including directional ramp, exit, merge, turn,
   U-turn, and roundabout events;
 - navigation start forces both platforms to resume LAN broadcast immediately,
@@ -26,6 +33,13 @@ must remain equivalent:
 - the same lane-action vocabulary and the same invalid recommendation values
   (`15`, `22`, and `255`);
 - GPS weakness is diagnostic and simulation is never control-active.
+
+ACK compatibility must cover the complete UTF-8 datagram, including optional
+vehicle feedback. The design target is a 2048-byte ACK limit on both platforms;
+the current iOS 512-byte/four-field parser does not satisfy this target. Ordinary
+reconnection must preserve navigation session/event identity, while runtime
+restart must not automatically restore an active maneuver from cached state.
+These are pending implementation and validation requirements.
 
 Platform integrations outside navigation are intentionally not parity
 requirements. Android's Home Assistant / Tesla reverse-sync and legacy

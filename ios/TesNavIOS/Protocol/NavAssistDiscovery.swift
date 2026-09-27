@@ -211,21 +211,85 @@ enum UdpBroadcast {
 }
 
 enum UnauthenticatedNavAssistUDP {
+  static let maxAckBytes = 2 * 1_024
+
+  // A matching ACK confirms transport only; optional vehicle feedback is not displayed here.
+  static func matchesAck(_ payload: Data, sessionID: String, sequence: UInt64) -> Bool {
+    let required: Set<String> = ["messageType", "schemaVersion", "sessionId", "sequence"]
+    guard !payload.isEmpty, payload.count <= maxAckBytes,
+          sequence > 0, sequence <= UInt64(Int64.max),
+          String(data: payload, encoding: .utf8) != nil,
+          let object = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+          let fields = ackMembers(payload),
+          required.isSubset(of: Set(object.keys)),
+          Set(object.keys).isSubset(of: required.union(["vehicleLane"])),
+          object["messageType"] as? String == "navassist_udp_ack",
+          object["sessionId"] as? String == sessionID,
+          fields["schemaVersion"] == String(NavAssistProtocol.schemaVersion),
+          fields["sequence"] == String(sequence) else { return false }
+    if let feedback = fields["vehicleLane"], feedback.first == "{",
+       ackMembers(Data(feedback.utf8)) == nil { return false }
+    return true
+  }
+
+  // Foundation validates JSON syntax. This bounded scan retains exact integer tokens and
+  // detects duplicate decoded keys in the envelope and its one flat feedback object.
+  private static func ackMembers(_ data: Data) -> [String: String]? {
+    guard let text = String(data: data, encoding: .utf8) else { return nil }
+    let bytes = Array(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
+    guard bytes.first == 0x7b, bytes.last == 0x7d else { return nil }
+    var result: [String: String] = [:]
+    var depth = 1
+    var quoted = false
+    var escaped = false
+    var start = 1
+    var colon: Int?
+    var previous: UInt8 = 0x7b
+    for index in 1..<bytes.count {
+      let byte = bytes[index]
+      if quoted {
+        if escaped { escaped = false }
+        else if byte == 0x5c { escaped = true }
+        else if byte == 0x22 { quoted = false }
+        previous = byte
+        continue
+      }
+      if [0x20, 0x09, 0x0a, 0x0d].contains(byte) { continue }
+      if byte == 0x22 { quoted = true; previous = byte; continue }
+      if (byte == 0x7d || byte == 0x5d) && previous == 0x2c { return nil }
+      if depth == 1 && (byte == 0x2c || byte == 0x7d) {
+        if let separator = colon {
+          let keyData = Data(bytes[start..<separator])
+          guard let key = (try? JSONSerialization.jsonObject(with: keyData, options: [.fragmentsAllowed])) as? String,
+                result[key] == nil else { return nil }
+          let value = String(decoding: bytes[(separator + 1)..<index], as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+          guard !value.isEmpty else { return nil }
+          result[key] = value
+        } else if byte != 0x7d || previous != 0x7b { return nil }
+        start = index + 1
+        colon = nil
+      } else if depth == 1 && byte == 0x3a {
+        guard colon == nil else { return nil }
+        colon = index
+      }
+      if byte == 0x7b || byte == 0x5b { depth += 1 }
+      if byte == 0x7d || byte == 0x5d { depth -= 1 }
+      previous = byte
+    }
+    return depth == 0 && !quoted ? result : nil
+  }
+
   static func send(snapshot: Data, sessionID: String, sequence: UInt64) throws -> String? {
     guard !snapshot.isEmpty, snapshot.count <= 8 * 1_024 else { throw NavAssistDiscoveryError.socket }
     let responses = try UdpBroadcast.exchange(
       snapshot,
       port: NavAssistProtocol.udpSnapshotPort,
       receiveWindow: 0.35,
-      maxResponseBytes: 512
+      maxResponseBytes: maxAckBytes
     )
     for response in responses {
-      guard let object = try? JSONSerialization.jsonObject(with: response.payload) as? [String: Any],
-            Set(object.keys) == Set(["messageType", "schemaVersion", "sessionId", "sequence"]),
-            object["messageType"] as? String == "navassist_udp_ack",
-            (object["schemaVersion"] as? NSNumber)?.intValue == NavAssistProtocol.schemaVersion,
-            object["sessionId"] as? String == sessionID,
-            (object["sequence"] as? NSNumber)?.uint64Value == sequence else { continue }
+      guard matchesAck(response.payload, sessionID: sessionID, sequence: sequence) else { continue }
       return response.sourceHost
     }
     return nil

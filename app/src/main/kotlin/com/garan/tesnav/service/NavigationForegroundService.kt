@@ -32,6 +32,7 @@ import com.garan.tesnav.export.HttpNavAssistV2Exporter
 import com.garan.tesnav.export.NavAssistPairingStore
 import com.garan.tesnav.export.NavAssistV2ConnectionStatus
 import com.garan.tesnav.export.NavAssistV2ExportConfig
+import com.garan.tesnav.export.NavAssistV2Session
 import com.garan.tesnav.export.UdpNavAssistV2EndpointDiscovery
 import com.garan.tesnav.export.WebSocketNavigationDataExporter
 import com.garan.tesnav.homeassistant.HomeAssistantConnectionState
@@ -39,6 +40,7 @@ import com.garan.tesnav.homeassistant.HomeAssistantNavigationClient
 import com.garan.tesnav.homeassistant.TeslaNavigationDestination
 import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.model.NavigationState
+import com.garan.tesnav.model.OemVehicleLaneState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -55,6 +57,7 @@ class NavigationForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var wakeLock: PowerManager.WakeLock? = null
     private var appliedApiKey: String? = null
+    private var deferredApiKey: String? = null
 
     lateinit var stateStore: NavigationStateStore
         private set
@@ -64,9 +67,15 @@ class NavigationForegroundService : Service() {
         private set
     private lateinit var navAssistV2Exporter: HttpNavAssistV2Exporter
         private set
+    private lateinit var navAssistSession: NavAssistV2Session
+    private val sourceGate = com.garan.tesnav.model.NavigationSourceGate(
+        BuildConfig.NAV_ASSIST_SOURCE_BUDGET_MS, BuildConfig.NAV_ASSIST_PROGRESS_BUDGET_MS,
+    )
     lateinit var homeAssistantClient: HomeAssistantNavigationClient
         private set
     private lateinit var repository: NavigationRepository
+    private var locationBridge: NavigationLocationBridge? = null
+    private lateinit var laneSpeech: LaneChangeSpeech
     private val exporterObservationJobs = mutableListOf<Job>()
     private var legacyExportEnabled = false
     private lateinit var navAssistIdentity: AndroidKeystoreNavAssistIdentity
@@ -82,6 +91,8 @@ class NavigationForegroundService : Service() {
     val navAssistV2ResolvedEndpoint: StateFlow<String?> = mutableNavAssistV2ResolvedEndpoint.asStateFlow()
     private val mutableNavAssistV2LastError = MutableStateFlow<String?>(null)
     val navAssistV2LastError: StateFlow<String?> = mutableNavAssistV2LastError.asStateFlow()
+    private val mutableOemVehicleLaneState = MutableStateFlow(OemVehicleLaneState())
+    val oemVehicleLaneState: StateFlow<OemVehicleLaneState> = mutableOemVehicleLaneState.asStateFlow()
 
     private val mutableTeslaSyncEnabled = MutableStateFlow(false)
     val teslaSyncEnabled: StateFlow<Boolean> = mutableTeslaSyncEnabled.asStateFlow()
@@ -117,7 +128,11 @@ class NavigationForegroundService : Service() {
         stateStore = NavigationStateStore()
         commaStateStore = CommaStateStore()
         homeAssistantClient = HomeAssistantNavigationClient()
-        mutableTeslaSyncEnabled.value = preferences().getBoolean(HA_SYNC_ENABLED, false)
+        // A persisted preference is not authority to resume an interrupted driving event.
+        mutableTeslaSyncEnabled.value = false
+        if (preferences().getBoolean(HA_SYNC_ENABLED, false)) {
+            stateStore.update { copy(errorMessage = "自动同步尚未恢复，请在设置中重新开启") }
+        }
         // v3 uses an Android Keystore identity; remove the obsolete shared-secret preference on upgrade.
         getSharedPreferences("navassist_v2", MODE_PRIVATE).edit().clear().apply()
         navAssistIdentity = AndroidKeystoreNavAssistIdentity.loadOrCreate(applicationContext)
@@ -135,6 +150,19 @@ class NavigationForegroundService : Service() {
             }
         }
         repository.initialize()
+        locationBridge = NavigationLocationBridge(this, repository)
+        scope.launch {
+            while (true) {
+                locationBridge?.update(stateStore.state.value, mutableOemVehicleLaneState.value)
+                kotlinx.coroutines.delay(200)
+            }
+        }
+        laneSpeech = LaneChangeSpeech(this,
+            enabled = { repository.speechMode != com.garan.tesnav.config.SpeechMode.MUTED &&
+                stateStore.state.value.navigationMode == NavigationMode.REALTIME },
+            completed = { id, session ->
+                if (::navAssistV2Exporter.isInitialized) navAssistV2Exporter.completeLaneAnnouncement(id, session)
+            })
         rebuildDataExporters()
         observeRuntime()
         if (mutableTeslaSyncEnabled.value) startHomeAssistant()
@@ -164,6 +192,7 @@ class NavigationForegroundService : Service() {
     fun planRoute(latitude: Double, longitude: Double): Boolean = repository.planRoute(latitude, longitude)
     fun selectRoute(routeId: Int): Boolean = repository.selectRoute(routeId)
     fun startRealtime(): Boolean = repository.startRealtime().also { accepted ->
+        if (accepted) sourceGate.arm(android.os.SystemClock.elapsedRealtime())
         if (accepted && ::navAssistV2Exporter.isInitialized) navAssistV2Exporter.requestRediscovery()
     }
     fun startSimulation(): Boolean = repository.startSimulation().also { accepted ->
@@ -171,17 +200,38 @@ class NavigationForegroundService : Service() {
     }
     fun pauseSimulation(): Boolean = repository.pauseSimulation()
     fun resumeSimulation(): Boolean = repository.resumeSimulation()
-    fun setSpeechEnabled(enabled: Boolean): Boolean = repository.setSpeechEnabled(enabled)
+    fun setSpeechEnabled(enabled: Boolean): Boolean = repository.setSpeechEnabled(enabled).also {
+        if (!enabled) laneSpeech.cancel()
+    }
     val speechMode: com.garan.tesnav.config.SpeechMode get() = repository.speechMode
-    fun setSpeechMode(mode: com.garan.tesnav.config.SpeechMode): Boolean = repository.setSpeechMode(mode)
-    fun stopNavigation() = repository.stopNavigation()
-    fun refreshAMapConfiguration() {
-        val key = AmapConfiguration.effectiveKey(applicationContext) ?: return
-        if (key == appliedApiKey || stateStore.state.value.navigationMode != NavigationMode.IDLE) return
-        repository.release()
+    fun setSpeechMode(mode: com.garan.tesnav.config.SpeechMode): Boolean = repository.setSpeechMode(mode).also {
+        if (mode == com.garan.tesnav.config.SpeechMode.MUTED) laneSpeech.cancel()
+    }
+    fun stopNavigation() {
+        laneSpeech.cancel()
+        sourceGate.disarm()
+        repository.stopNavigation()
+    }
+    fun refreshAMapConfiguration(): String? {
+        val key = AmapConfiguration.effectiveKey(applicationContext) ?: return null
+        if (key == appliedApiKey || stateStore.state.value.navigationMode != NavigationMode.IDLE) return null
+        val restartMessage = "导航配置已保存；地图仍占用导航引擎，请在系统设置中强行停止本应用后重新打开以生效"
+        if (key == deferredApiKey) {
+            stateStore.update { copy(errorMessage = restartMessage) }
+            return restartMessage
+        }
+        if (!repository.release()) {
+            deferredApiKey = key
+            repository.initialize()
+            stateStore.update { copy(errorMessage = restartMessage) }
+            return restartMessage
+        }
         AmapConfiguration.prepare(applicationContext)
-        appliedApiKey = key
-        repository.initialize()
+        if (repository.initialize().isSuccess) {
+            appliedApiKey = key
+            deferredApiKey = null
+        }
+        return null
     }
     fun currentPath(): AMapNaviPath? = repository.currentPath()
 
@@ -196,12 +246,15 @@ class NavigationForegroundService : Service() {
     fun setTeslaSyncEnabled(enabled: Boolean) {
         if (mutableTeslaSyncEnabled.value == enabled) return
         mutableTeslaSyncEnabled.value = enabled
+        if (enabled) sourceGate.arm(android.os.SystemClock.elapsedRealtime()) else sourceGate.disarm()
         preferences().edit().putBoolean(HA_SYNC_ENABLED, enabled).apply()
         resetTeslaSyncTracking()
         if (enabled) startHomeAssistant() else homeAssistantClient.stop()
     }
 
     override fun onDestroy() {
+        locationBridge?.close()
+        if (::laneSpeech.isInitialized) laneSpeech.close()
         exporterObservationJobs.forEach(Job::cancel)
         exporterObservationJobs.clear()
         if (::homeAssistantClient.isInitialized) homeAssistantClient.release()
@@ -224,6 +277,9 @@ class NavigationForegroundService : Service() {
             baseUrl = BuildConfig.NAV_ASSIST_V2_URL,
             intervalMs = BuildConfig.NAV_ASSIST_V2_INTERVAL_MS,
         )
+        if (!::navAssistSession.isInitialized) {
+            navAssistSession = NavAssistV2Session(validForMs = navAssistV2Config.validForMs)
+        }
         legacyExportEnabled = BuildConfig.EXPORT_ENABLED && !navAssistV2Config.isConfigured()
         exporter = WebSocketNavigationDataExporter(
             config = ExportConfig(
@@ -238,11 +294,23 @@ class NavigationForegroundService : Service() {
         )
         navAssistV2Exporter = HttpNavAssistV2Exporter(
             config = navAssistV2Config,
-            stateProvider = { stateStore.state.value },
+            navigationSession = navAssistSession,
+            stateProvider = {
+                val prepared = sourceGate.prepare(stateStore.state.value, android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis())
+                val sourceStatus = sourceGate.reason
+                if (stateStore.state.value.navAssistSourceStatus != sourceStatus ||
+                    stateStore.state.value.navAssistControlAllowed != prepared.navAssistControlAllowed) {
+                    stateStore.update { copy(navAssistSourceStatus = sourceStatus, navAssistControlAllowed = prepared.navAssistControlAllowed) }
+                }
+                prepared
+            },
             identity = navAssistIdentity,
             endpointDiscovery = UdpNavAssistV2EndpointDiscovery(navAssistIdentity, navAssistPairingStore),
             pinnedDeviceProvider = navAssistPairingStore::pinnedDevice,
             useUnauthenticatedUdp = true,
+            udpClient = com.garan.tesnav.export.JvmUdpNavAssistV3Client(
+                if (BuildConfig.DEBUG) { line -> com.garan.tesnav.util.NavigationTrace.append(filesDir, line, "NavAssist-UDP") } else null),
+            requireOwnerHandshake = true,
         )
         observeExporterInstances()
         exporter.start()
@@ -257,6 +325,7 @@ class NavigationForegroundService : Service() {
         mutableNavAssistV2Status.value = observedNavAssistExporter.status.value
         mutableNavAssistV2ResolvedEndpoint.value = observedNavAssistExporter.resolvedEndpoint.value
         mutableNavAssistV2LastError.value = observedNavAssistExporter.lastError.value
+        mutableOemVehicleLaneState.value = observedNavAssistExporter.oemVehicleLaneState.value
         exporterObservationJobs += scope.launch {
             observedLegacyExporter.connectionState.collect { mutableCommaConnectionState.value = it }
         }
@@ -271,6 +340,12 @@ class NavigationForegroundService : Service() {
         }
         exporterObservationJobs += scope.launch {
             observedNavAssistExporter.lastError.collect { mutableNavAssistV2LastError.value = it }
+        }
+        exporterObservationJobs += scope.launch {
+            observedNavAssistExporter.oemVehicleLaneState.collect { mutableOemVehicleLaneState.value = it }
+        }
+        exporterObservationJobs += scope.launch {
+            observedNavAssistExporter.laneAnnouncement.collect { laneSpeech.offer(it) }
         }
     }
 
@@ -318,19 +393,20 @@ class NavigationForegroundService : Service() {
     private fun logNavAssistDiagnostics(state: NavigationState) {
         val distanceBucket = state.nextTurnDistanceMeters?.div(10)?.times(10)
         val key = "${state.navigationMode}:${state.routePlanned}:${state.routeMatched}:" +
-            "${state.maneuver}:${state.guidanceStepIndex}:$distanceBucket:${state.accuracy?.toInt()}"
+            "${state.maneuver}:${state.guidanceStepIndex}:$distanceBucket:${state.accuracy?.toInt()}:${state.navAssistSourceStatus}"
         if (key == lastNavAssistDiagnosticKey) return
         lastNavAssistDiagnosticKey = key
         val nowMs = System.currentTimeMillis()
-        val locationAgeMs = state.locationObservedAtMs?.let { (nowMs - it).coerceAtLeast(0L) }
-        val guidanceAgeMs = state.guidanceObservedAtMs?.let { (nowMs - it).coerceAtLeast(0L) }
-        Log.i(
-            NAVASSIST_DIAGNOSTIC_TAG,
-            "mode=${state.navigationMode} planned=${state.routePlanned} matched=${state.routeMatched} " +
+        val locationAgeMs = state.locationObservedAtMs?.let { nowMs - it }
+        val guidanceAgeMs = state.guidanceObservedAtMs?.let { nowMs - it }
+        val line = "mode=${state.navigationMode} planned=${state.routePlanned} matched=${state.routeMatched} " +
                 "maneuver=${state.maneuver} step=${state.guidanceStepIndex} " +
                 "distanceM=${state.nextTurnDistanceMeters} accuracyM=${state.accuracy} " +
-                "locationAgeMs=$locationAgeMs guidanceAgeMs=$guidanceAgeMs",
-        )
+                "locationAgeMs=$locationAgeMs guidanceAgeMs=$guidanceAgeMs source=${state.navAssistSourceStatus} " +
+                "controlAllowed=${state.navAssistControlAllowed} sourceBudgetMs=${BuildConfig.NAV_ASSIST_SOURCE_BUDGET_MS} " +
+                "progressBudgetMs=${BuildConfig.NAV_ASSIST_PROGRESS_BUDGET_MS}"
+        Log.i(NAVASSIST_DIAGNOSTIC_TAG, line)
+        if (BuildConfig.DEBUG) com.garan.tesnav.util.NavigationTrace.append(filesDir, line, NAVASSIST_DIAGNOSTIC_TAG)
     }
 
     private fun startHomeAssistant() {
@@ -352,6 +428,7 @@ class NavigationForegroundService : Service() {
             routeRequestDestination = null
             activeTeslaDestination = null
             failedTeslaDestination = null
+            sourceGate.disarm()
             repository.stopNavigation()
         }
     }

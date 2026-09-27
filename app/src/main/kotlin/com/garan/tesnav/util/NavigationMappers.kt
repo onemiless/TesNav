@@ -150,7 +150,8 @@ object NavigationMappers {
     private val VALID_ROAD_TYPES = setOf(
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 53, 56, 58,
     )
-    private val RAMP_ROAD_TYPES = setOf(6, 8, 56, 58)
+    // AMap RoadType.ENTRANCE (10) uses the existing directional ramp path.
+    private val RAMP_ROAD_TYPES = setOf(6, 8, 10, 56, 58)
     private const val ROAD_TYPE_EXIT = 9
 
     private fun NavigationManeuver.exitVariant(): NavigationManeuver = when (this) {
