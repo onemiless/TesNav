@@ -634,9 +634,11 @@ class NavigationRepository(
         val currentLink = stepIndex?.let { step ->
             linkIndex?.let { link -> steps.getOrNull(step)?.links?.getOrNull(link) }
         }
-        val maneuverRoadType = stepIndex?.let { step ->
-            steps.getOrNull(step + 1)?.links?.firstOrNull()?.roadType
-        } ?: currentLink?.roadType
+        val maneuverRoadType = NavigationMappers.maneuverRoadType(
+            nextRoadType = stepIndex?.let { step -> steps.getOrNull(step + 1)?.links?.firstOrNull()?.roadType },
+            currentStepRoadTypes = stepIndex?.let { step -> steps.getOrNull(step)?.links?.map { it.roadType } }.orEmpty(),
+            currentRoadType = currentLink?.roadType,
+        )
         val followingStep = stepIndex?.let { steps.getOrNull(it + 1) }
         val followingRoadType = stepIndex?.let { step ->
             steps.getOrNull(step + 2)?.links?.firstOrNull()?.roadType

@@ -47,6 +47,18 @@ class NavigationMappersTest {
     }
 
     @Test
+    fun `exit or ramp type remains attached to the whole current guidance step`() {
+        assertEquals(9, NavigationMappers.maneuverRoadType(7, listOf(9, 7, 7), 7))
+        assertEquals(10, NavigationMappers.maneuverRoadType(7, listOf(10, 7), 7))
+        assertEquals(8, NavigationMappers.maneuverRoadType(8, listOf(9), 9))
+        assertEquals(7, NavigationMappers.maneuverRoadType(7, listOf(1, 7), 7))
+        assertEquals(
+            NavigationManeuver.EXIT_RIGHT,
+            NavigationMappers.maneuver(3, NavigationMappers.maneuverRoadType(7, listOf(9, 7), 7)),
+        )
+    }
+
+    @Test
     fun `road metadata accepts only documented values`() {
         assertEquals(0, NavigationMappers.validRoadClass(0))
         assertEquals(10, NavigationMappers.validRoadClass(10))

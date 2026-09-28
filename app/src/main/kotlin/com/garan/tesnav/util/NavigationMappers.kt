@@ -6,6 +6,13 @@ import com.garan.tesnav.model.NavigationManeuver
 import com.garan.tesnav.model.TrafficStatus
 
 object NavigationMappers {
+    /** Keeps a maneuver on the exit/ramp path when AMap's next step starts on an ordinary link. */
+    fun maneuverRoadType(nextRoadType: Int?, currentStepRoadTypes: Iterable<Int?>, currentRoadType: Int?): Int? =
+        nextRoadType.takeIf(::isExitOrRampRoadType)
+            ?: currentStepRoadTypes.firstOrNull(::isExitOrRampRoadType)
+            ?: nextRoadType
+            ?: currentRoadType
+
     /** Maps documented AMap IconType integer values to the shared NavAssist vocabulary. */
     fun maneuver(raw: Int?, roadType: Int? = null): NavigationManeuver {
         val direction = when (raw) {
@@ -153,6 +160,8 @@ object NavigationMappers {
     // AMap RoadType.ENTRANCE (10) uses the existing directional ramp path.
     private val RAMP_ROAD_TYPES = setOf(6, 8, 10, 56, 58)
     private const val ROAD_TYPE_EXIT = 9
+
+    private fun isExitOrRampRoadType(raw: Int?): Boolean = raw != null && (raw == ROAD_TYPE_EXIT || raw in RAMP_ROAD_TYPES)
 
     private fun NavigationManeuver.exitVariant(): NavigationManeuver = when (this) {
         NavigationManeuver.SLIGHT_LEFT, NavigationManeuver.TURN_LEFT, NavigationManeuver.SHARP_LEFT,
