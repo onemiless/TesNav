@@ -144,6 +144,7 @@ class NavigationRepository(
                 externalLocation.injectedFix != null, phoneGpsSignalWeak)
         if (changed || stateStore.state.value.gpsSignalWeak != weak) update {
             copy(gpsSignalWeak = weak,
+                locationSourceStatus = result.source.name.lowercase(),
                 // New source must provide a new SDK position/match; old phone output is not authority.
                 routeMatched = if (changed) false else routeMatched,
                 locationReceivedElapsedMs = if (changed) null else locationReceivedElapsedMs,
@@ -156,6 +157,8 @@ class NavigationRepository(
         if (navi != null) return@runCatching
         val generation = ++engineGeneration
         navi = AMapNavi.getInstance(appContext).also {
+            it.setMultipleRouteNaviMode(true)
+            it.setIsOpenTrafficLight("TLTRUE")
             // Map location layers can keep the singleton alive after destroy(). Keep its
             // physical request occupancy and installed paths across Repository rebindings.
             val shared = sharedEngineState?.takeIf { shared -> shared.engine === it }
@@ -222,12 +225,20 @@ class NavigationRepository(
 
     fun selectRoute(routeId: Int): Boolean {
         val current = stateStore.state.value
-        if (current.navigationMode != NavigationMode.ROUTE_PLANNED || !current.routePlanned) return false
+        if (current.navigationMode !in listOf(NavigationMode.ROUTE_PLANNED, NavigationMode.REALTIME, NavigationMode.SIMULATION) ||
+            !current.routePlanned) return false
+        val path = plannedRoutePaths()[routeId] ?: return false
         return when (routeSelection.select(routeId, current.routeChoices, current.selectedRouteId)) {
             RouteSelectionOutcome.REJECTED -> false
             RouteSelectionOutcome.ALREADY_SELECTED -> true
             RouteSelectionOutcome.SELECTED -> {
-                val path = plannedRoutePaths()[routeId] ?: return false
+                if (current.navigationMode != NavigationMode.ROUTE_PLANNED) {
+                    val engine = navi ?: return false
+                    if (runCatching {
+                            engine.selectMainPathID(path.pathid)
+                            engine.refreshNaviInfo()
+                        }.isFailure) return false
+                }
                 traceSdk("route_selected") { "routeId=$routeId selectedPathId=${path.pathid}" }
                 val choices = current.routeChoices.map { it.copy(selected = it.routeId == routeId) }
                 val observedAtMs = System.currentTimeMillis()
@@ -235,9 +246,9 @@ class NavigationRepository(
                 resetGuidanceCallbackState()
                 update {
                     copy(
-                        routeRemainDistanceMeters = path.allLength,
-                        routeRemainTimeSeconds = path.allTime,
-                        remainingTrafficLightCount = path.trafficLightCount,
+                        routeRemainDistanceMeters = if (current.navigationMode == NavigationMode.ROUTE_PLANNED) path.allLength else routeRemainDistanceMeters,
+                        routeRemainTimeSeconds = if (current.navigationMode == NavigationMode.ROUTE_PLANNED) path.allTime else routeRemainTimeSeconds,
+                        remainingTrafficLightCount = if (current.navigationMode == NavigationMode.ROUTE_PLANNED) path.trafficLightCount else remainingTrafficLightCount,
                         routeTrafficLights = path.lightList.orEmpty().map { GeoPoint(it.latitude, it.longitude) },
                         routeChoices = choices,
                         selectedRouteId = routeId,

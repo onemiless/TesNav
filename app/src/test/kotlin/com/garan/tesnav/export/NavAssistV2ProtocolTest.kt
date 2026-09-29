@@ -8,6 +8,7 @@ import com.garan.tesnav.model.NavigationState
 import com.garan.tesnav.model.RoadLayerStatus
 import com.garan.tesnav.model.RouteNoticeState
 import com.garan.tesnav.model.RouteNoticeType
+import com.garan.tesnav.model.TrafficLightObservation
 import com.google.gson.Gson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,6 +17,33 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NavAssistV2ProtocolTest {
+    @Test
+    fun `fresh matching red countdown asks C3 to hold the current turn signal`() {
+        val snapshot = NavAssistV2Mapper.snapshot(
+            activeState().copy(trafficLight = TrafficLightObservation(2, 2, 37, 3_900L)),
+            "test-session", 1L, 4_000L, 500L,
+        )
+
+        assertEquals(true, snapshot.guidance?.turnSignalHold)
+        assertEquals(37, snapshot.guidance?.turnSignalCountdownS)
+    }
+
+    @Test
+    fun `stale green or wrong-direction countdown cannot hold a turn signal`() {
+        val base = activeState()
+        for (observation in listOf(
+            TrafficLightObservation(3, 2, 10, 3_900L),
+            TrafficLightObservation(2, 1, 10, 3_900L),
+            TrafficLightObservation(2, 2, 10, 3_499L),
+        )) {
+            val guidance = NavAssistV2Mapper.snapshot(
+                base.copy(trafficLight = observation), "test-session", 1L, 4_000L, 500L,
+            ).guidance
+            assertNull(guidance?.turnSignalHold)
+            assertNull(guidance?.turnSignalCountdownS)
+        }
+    }
+
     @Test
     fun `unconfirmed source exports inactive without replacing the route event identity`() {
         val session = NavAssistV2Session(sessionId = "guarded-session")

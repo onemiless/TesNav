@@ -9,21 +9,21 @@ internal class VehicleLocationObservation {
 
     fun read(state: OemVehicleLaneState, elapsed: Long, wall: Long): NavigationLocationObservation? {
         fun held() = cached?.takeIf {
-            elapsed >= it.receivedElapsedMs && elapsed-it.receivedElapsedMs+it.ageAtReceiptMs < 2500 &&
-                wall >= it.measuredAtMs && wall-it.measuredAtMs < 2500
+            elapsed >= it.receivedElapsedMs && elapsed-it.receivedElapsedMs+it.ageAtReceiptMs < MAX_AGE_MS &&
+                wall >= it.measuredAtMs && wall-it.measuredAtMs < MAX_AGE_MS
         }
         fun invalid(): NavigationLocationObservation? { cached = null; return null }
         // A legacy/missing ACK is not a new invalid GPS measurement. Keep only the original deadline.
         val receipt = state.receivedAtElapsedMs ?: return held()
         val telemetry = state.navigationTelemetry ?: return held()
         if (elapsed < receipt) return invalid()
-        if (elapsed - receipt >= 2500) return held()
+        if (elapsed - receipt >= MAX_AGE_MS) return held()
         if (telemetry.gpsStatus != "observed") return invalid()
         val clock = telemetry.gpsTimeMs ?: return invalid()
         val ages = listOf(telemetry.gpsTimeAgeMs, telemetry.gpsPositionAgeMs, telemetry.gpsMotionAgeMs)
-        if (ages.any { it == null || it !in 0L..2499L }) return invalid()
+        if (ages.any { it == null || it !in 0L until MAX_AGE_MS }) return invalid()
         val age = ages.filterNotNull().max() + elapsed - receipt
-        if (age >= 2500) return invalid()
+        if (age >= MAX_AGE_MS) return invalid()
         if (lastClock?.let { clock < it } == true) return invalid()
         if (clock == lastClock) return held()
         val lat = telemetry.latitude ?: return invalid()
@@ -39,5 +39,9 @@ internal class VehicleLocationObservation {
             measurementTimeVerified = false, observationTimeOnly = true).also {
             cached = it; lastClock = clock
         }
+    }
+
+    private companion object {
+        const val MAX_AGE_MS = 3_000L
     }
 }

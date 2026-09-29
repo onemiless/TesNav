@@ -9,7 +9,8 @@ class VehicleLocationObservationTest {
         val original = factory.read(feedback(), 1000, 20000)!!
         assertSame(original, factory.read(OemVehicleLaneState(), 1500, 20500))
         assertSame(original, factory.read(feedback(2000).copy(navigationTelemetry=null), 2000, 21000))
-        assertNull(factory.read(OemVehicleLaneState(), 3200, 22200))
+        assertNotNull(factory.read(OemVehicleLaneState(), 3200, 22200))
+        assertNull(factory.read(OemVehicleLaneState(), 3700, 22700))
     }
     @Test fun `explicit invalid telemetry clears cached fix so a missing ACK cannot revive it`() {
         val factory = VehicleLocationObservation()
@@ -47,7 +48,7 @@ class VehicleLocationObservationTest {
     @Test fun `stale disconnected invalid and old version feedback cannot inject`() {
         val factory = VehicleLocationObservation()
         assertNull(factory.read(OemVehicleLaneState(), 1000, 20000))
-        assertNull(factory.read(feedback(), 3500, 22500))
+        assertNull(factory.read(feedback(), 3700, 22700))
         assertNull(factory.read(feedback().copy(navigationTelemetry = telemetry().copy(gpsPositionAgeMs = null)), 1000, 20000))
         assertNull(factory.read(feedback().copy(navigationTelemetry = telemetry().copy(gpsStatus = "jump")), 1000, 20000))
     }
@@ -58,7 +59,7 @@ class VehicleLocationObservationTest {
         factory.reset()
         assertNotNull(factory.read(feedback(2000, 9000), 2000, 21000))
     }
-    @Test fun `vehicle bridge switches to phone only after independent advancing recovery`() {
+    @Test fun `vehicle bridge keeps vehicle primary and falls back when it expires`() {
         val calls = mutableListOf<String>()
         val controller = NavigationExternalLocationController(object : NavigationExternalLocationSink {
             override fun setExternalEnabled(enabled: Boolean) { calls.add("enabled=$enabled") }
@@ -71,8 +72,8 @@ class VehicleLocationObservationTest {
         val phone = fix.copy(sourceEpoch="phone-gps", measuredAtMs=20000, ageAtReceiptMs=0,
             measurementTimeVerified=true, observationTimeOnly=false)
         assertEquals(NavigationLocationSource.VEHICLE, controller.update(phone, fix, true, 1000, 20000).source)
-        assertEquals(NavigationLocationSource.PHONE, controller.update(phone.copy(measuredAtMs=22000, receivedElapsedMs=3000),
-            fix, true, 3000, 22000).source)
+        assertEquals(NavigationLocationSource.PHONE, controller.update(phone.copy(measuredAtMs=24000, receivedElapsedMs=5000),
+            null, true, 5000, 24000).source)
         assertEquals("enabled=false", calls.last())
         assertNull(controller.injectedFix)
     }

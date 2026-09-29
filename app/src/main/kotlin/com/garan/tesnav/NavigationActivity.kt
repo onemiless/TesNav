@@ -47,6 +47,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.ceil
 
 /** Dedicated AMap navigation page, matching AMap's official Activity separation. */
@@ -60,10 +63,13 @@ class NavigationActivity : Activity() {
     private lateinit var realtimeButton: Button
     private lateinit var simulationButton: Button
     private lateinit var speechButton: Button
+    private lateinit var routeSwitchButton: Button
     private lateinit var settingsButton: ImageButton
     private lateinit var debugButton: ImageButton
     private lateinit var overviewButton: OverviewButtonView
     private lateinit var laneGuidanceView: LaneGuidanceView
+    private lateinit var navigationSummaryView: TextView
+    private lateinit var navigationTopPanel: LinearLayout
 
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var runtimeService: NavigationForegroundService? = null
@@ -79,6 +85,7 @@ class NavigationActivity : Activity() {
     private var previousMode: NavigationMode? = null
     private var routeRequestSent = false
     private var renderedRouteChoices: List<RouteChoice> = emptyList()
+    private var routeChoicesExpanded = false
 
     private val runtimeConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -108,6 +115,7 @@ class NavigationActivity : Activity() {
         createControls()
         setContentView(createRootView())
         naviView.onCreate(savedInstanceState)
+        naviView.setShowTrafficLightView(true)
         naviView.setLazyOverviewButtonView(overviewButton)
         configureMap()
         configureActions()
@@ -144,6 +152,7 @@ class NavigationActivity : Activity() {
         realtimeButton = actionButton("开始导航")
         simulationButton = actionButton("模拟导航")
         speechButton = actionButton("静音")
+        routeSwitchButton = actionButton("切换路线")
         routeChoiceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -161,6 +170,9 @@ class NavigationActivity : Activity() {
                 marginStart = dp(12)
             })
             addView(speechButton, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = dp(12)
+            })
+            addView(routeSwitchButton, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = dp(12)
             })
         }
@@ -181,11 +193,30 @@ class NavigationActivity : Activity() {
             contentDescription = "路线全览"
         }
         laneGuidanceView = LaneGuidanceView(this, feedbackDisplayBudgetMs)
+        navigationSummaryView = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            setPadding(dp(16), dp(9), dp(16), dp(9))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(Color.argb(220, 24, 32, 38))
+            }
+            visibility = View.GONE
+        }
+        navigationTopPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            addView(navigationSummaryView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(laneGuidanceView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(6)
+            })
+        }
     }
 
     private fun createRootView(): FrameLayout = FrameLayout(this).apply {
         addView(naviView, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-        addView(laneGuidanceView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        addView(navigationTopPanel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             topMargin = dp(22)
             marginStart = dp(72)
@@ -240,6 +271,11 @@ class NavigationActivity : Activity() {
             val service = runtimeService ?: return@setOnClickListener
             if (!service.setSpeechEnabled(!currentState.speechEnabled)) toast("语音设置失败")
         }
+        routeSwitchButton.setOnClickListener {
+            routeChoicesExpanded = !routeChoicesExpanded
+            routeChoiceScroll.visibility = if (routeChoicesExpanded && currentState.routeChoices.size > 1) View.VISIBLE else View.GONE
+            routeSwitchButton.text = if (routeChoicesExpanded) "收起路线" else "切换路线"
+        }
         settingsButton.setOnClickListener {
             runtimeService?.let { service ->
                 SettingsDialog(
@@ -290,11 +326,16 @@ class NavigationActivity : Activity() {
         val oldMode = previousMode
         currentState = state
         laneGuidanceView.render(state, currentOemLaneState)
+        renderNavigationSummary(state)
         when (state.navigationMode) {
             NavigationMode.IDLE -> {
+                routeChoicesExpanded = false
+                routeSwitchButton.text = "切换路线"
                 routeActions.visibility = View.GONE
                 routeChoiceScroll.visibility = View.GONE
+                routeSwitchButton.visibility = View.GONE
                 speechButton.visibility = View.GONE
+                routeSwitchButton.visibility = View.GONE
                 if (oldMode != null && oldMode != NavigationMode.IDLE) finish()
                 if (routeRequestSent && !state.errorMessage.isNullOrBlank()) {
                     toast(state.errorMessage)
@@ -317,8 +358,10 @@ class NavigationActivity : Activity() {
                 }
             }
             NavigationMode.REALTIME -> {
+                if (state.routeChoices.size <= 1) routeChoicesExpanded = false
                 routeActions.visibility = View.VISIBLE
-                routeChoiceScroll.visibility = View.GONE
+                renderRouteChoices(state.routeChoices)
+                routeChoiceScroll.visibility = if (routeChoicesExpanded && state.routeChoices.size > 1) View.VISIBLE else View.GONE
                 endNavigationButton.visibility = View.VISIBLE
                 realtimeButton.visibility = View.GONE
                 simulationButton.visibility = View.GONE
@@ -326,11 +369,14 @@ class NavigationActivity : Activity() {
                     text = if (state.speechEnabled) "静音" else "恢复语音"
                     visibility = View.VISIBLE
                 }
+                routeSwitchButton.visibility = if (state.routeChoices.size > 1) View.VISIBLE else View.GONE
                 if (oldMode != NavigationMode.REALTIME) enterNavigationView()
             }
             NavigationMode.SIMULATION -> {
+                if (state.routeChoices.size <= 1) routeChoicesExpanded = false
                 routeActions.visibility = View.VISIBLE
-                routeChoiceScroll.visibility = View.GONE
+                renderRouteChoices(state.routeChoices)
+                routeChoiceScroll.visibility = if (routeChoicesExpanded && state.routeChoices.size > 1) View.VISIBLE else View.GONE
                 endNavigationButton.visibility = View.VISIBLE
                 realtimeButton.visibility = View.GONE
                 simulationButton.apply {
@@ -341,9 +387,13 @@ class NavigationActivity : Activity() {
                     text = if (state.speechEnabled) "静音" else "恢复语音"
                     visibility = View.VISIBLE
                 }
+                routeSwitchButton.visibility = if (state.routeChoices.size > 1) View.VISIBLE else View.GONE
                 if (oldMode != NavigationMode.SIMULATION) enterNavigationView()
             }
-            NavigationMode.ARRIVED -> routeActions.visibility = View.GONE
+            NavigationMode.ARRIVED -> {
+                routeActions.visibility = View.GONE
+                routeSwitchButton.visibility = View.GONE
+            }
         }
         previousMode = state.navigationMode
     }
@@ -380,11 +430,40 @@ class NavigationActivity : Activity() {
         }
         setOnClickListener {
             if (runtimeService?.selectRoute(choice.routeId) == true) {
+                routeChoicesExpanded = false
+                routeChoiceScroll.visibility = View.GONE
+                routeSwitchButton.text = "切换路线"
                 naviView.setShowMode(AMapNaviViewShowMode.SHOW_MODE_DISPLAY_OVERVIEW)
             } else {
                 toast("路线切换失败")
             }
         }
+    }
+
+    private fun renderNavigationSummary(state: NavigationState) {
+        if (!state.routePlanned || state.navigationMode == NavigationMode.IDLE) {
+            navigationSummaryView.visibility = View.GONE
+            return
+        }
+        val seconds = state.routeRemainTimeSeconds
+        val distance = state.routeRemainDistanceMeters
+        val trip = buildList {
+            seconds?.let { add("剩余 ${ceil(it / 60.0).toInt().coerceAtLeast(1)} 分钟") }
+            distance?.let { add(if (it >= 1000) String.format(Locale.CHINA, "%.1f 公里", it / 1000.0) else "$it 米") }
+            seconds?.let {
+                val arrival = SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(System.currentTimeMillis() + it * 1000L))
+                add("预计 $arrival 到达")
+            }
+        }.joinToString(" · ")
+        val light = state.trafficLight?.takeIf { System.currentTimeMillis() - it.observedAtMs in 0..3_000 }?.let {
+            val status = when (it.status) { 2 -> "红灯"; 3 -> "绿灯"; 4 -> "黄灯"; else -> return@let null }
+            val direction = when (it.direction) { 1 -> "左转"; 2 -> "右转"; 3 -> "掉头"; 4 -> "直行"; else -> null }
+            val elapsedSeconds = ((System.currentTimeMillis() - it.observedAtMs) / 1000L).toInt()
+            val countdown = it.countdownSeconds?.minus(elapsedSeconds)?.coerceAtLeast(0)
+            listOfNotNull(direction, "$status${countdown?.let { value -> " $value 秒" }.orEmpty()}").joinToString(" · ")
+        }
+        navigationSummaryView.text = listOfNotNull(trip.takeIf(String::isNotBlank), light).joinToString("\n")
+        navigationSummaryView.visibility = if (navigationSummaryView.text.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun enterNavigationView() {

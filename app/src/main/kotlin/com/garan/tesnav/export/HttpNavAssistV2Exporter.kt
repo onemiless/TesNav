@@ -138,7 +138,6 @@ internal class HttpNavAssistV2Exporter(
     private var stopped = false
     @Volatile private var ownerConfirmed = false
     private var ownerReadyAtMs: Long? = null
-    private var lastOwnerAckMs: Long? = null
 
     @Synchronized
     override fun start() {
@@ -376,9 +375,6 @@ internal class HttpNavAssistV2Exporter(
 
     @Synchronized
     private fun stateForOwner(state: NavigationState): NavigationState {
-        if (requireOwnerHandshake && useUnauthenticatedUdp && ownerConfirmed && !ownerAckFresh()) {
-            resetOwnerHandshake()
-        }
         if (!requireOwnerHandshake || ownerConfirmed) return state
         // Local C3 rejects source age > 2000 ms and future skew > 1000 ms.
         // Wait after acquiring the shared send lock so an old unacknowledged packet expires.
@@ -390,27 +386,18 @@ internal class HttpNavAssistV2Exporter(
     private fun recordOwnerResponse(accepted: Boolean) {
         if (!running) return
         if (!accepted) {
-            // One lost UDP reply does not establish a different sender. Retain
-            // this confirmed owner only within the existing snapshot lifetime.
-            // Feedback and speech receipts still clear immediately in the send loop.
-            if (!(useUnauthenticatedUdp && ownerConfirmed && ownerAckFresh())) resetOwnerHandshake()
+            // UDP reply loss is link telemetry; C3's per-snapshot TTL owns data freshness.
+            // Lifecycle and explicit rediscovery still reset the sender handshake.
+            if (!useUnauthenticatedUdp) resetOwnerHandshake()
         } else {
-            lastOwnerAckMs = monotonicMs()
             ownerConfirmed = !requireOwnerHandshake || ownerSettleMs == 0L || ownerReadyAtMs?.let { monotonicMs() > it } == true
         }
-    }
-
-    private fun ownerAckFresh(): Boolean {
-        val ackMs = lastOwnerAckMs ?: return false
-        val ageMs = monotonicMs() - ackMs
-        return ageMs >= 0L && ageMs < config.validForMs
     }
 
     @Synchronized
     private fun resetOwnerHandshake() {
         ownerConfirmed = false
         ownerReadyAtMs = null
-        lastOwnerAckMs = null
     }
 
     internal fun snapshotEndpoint(baseUrl: String): HttpUrl? {

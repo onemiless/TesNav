@@ -9,9 +9,9 @@ class NavigationLocationFallbackTest {
     private fun NavigationLocationFallback.at(t: Long, phone: NavigationLocationObservation?,
         vehicle: NavigationLocationObservation?, active: Boolean = true) = select(phone, vehicle, active, t, 10_000 + t)
 
-    @Test fun `phone preferred then vehicle used once per independent measurement`() {
+    @Test fun `vehicle preferred then phone used when vehicle expires`() {
         val s = NavigationLocationFallback()
-        assertEquals(NavigationLocationSource.PHONE, s.at(100, fix(), fix()).source)
+        assertEquals(NavigationLocationSource.VEHICLE, s.at(100, fix(), fix()).source)
         val fallback = s.at(3100, fix(), fix(3100))
         assertEquals(NavigationLocationSource.VEHICLE, fallback.source)
         assertNotNull(fallback.vehicleFixToInject)
@@ -20,12 +20,12 @@ class NavigationLocationFallbackTest {
         assertEquals(NavigationLocationSource.NONE, s.at(7100, null, fix(4100)).source)
     }
 
-    @Test fun `phone must recover with advancing independent observations even after both sources fail`() {
+    @Test fun `phone is used immediately when vehicle is unavailable`() {
         val s = NavigationLocationFallback()
         s.at(100, null, fix())
         assertEquals(NavigationLocationSource.VEHICLE, s.at(1100, fix(1100), fix(1100)).source)
-        assertEquals(NavigationLocationSource.NONE, s.at(2100, fix(2100), null).source)
-        assertEquals(NavigationLocationSource.NONE, s.at(3100, fix(1100), null).source)
+        assertEquals(NavigationLocationSource.PHONE, s.at(2100, fix(2100), null).source)
+        assertEquals(NavigationLocationSource.PHONE, s.at(3100, fix(1100), null).source)
         assertEquals(NavigationLocationSource.PHONE, s.at(3100, fix(3100), null).source)
     }
 
@@ -57,13 +57,13 @@ class NavigationLocationFallbackTest {
         assertEquals(NavigationLocationSource.PHONE, s.at(301, fix(301), null).source)
     }
 
-    @Test fun `failed phone recovery restarts stability timer`() {
+    @Test fun `fresh vehicle remains primary while phone changes`() {
         val s = NavigationLocationFallback()
         s.at(100, null, fix())
         s.at(1000, fix(1000), fix(1000))
         s.at(2000, null, fix(2000))
         assertEquals(NavigationLocationSource.VEHICLE, s.at(3000, fix(3000), fix(3000)).source)
         assertEquals(NavigationLocationSource.VEHICLE, s.at(4000, fix(4000), fix(4000)).source)
-        assertEquals(NavigationLocationSource.PHONE, s.at(5000, fix(5000), fix(5000)).source)
+        assertEquals(NavigationLocationSource.VEHICLE, s.at(5000, fix(5000), fix(5000)).source)
     }
 }

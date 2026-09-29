@@ -49,16 +49,10 @@ internal fun independentPlanningOrigin(
  * CAN fallback explicitly uses observation time; it does not claim a certified GNSS fix time.
  */
 internal class NavigationLocationFallback {
-    private var recoveringPhone = false
-    private var recoveryStarted: Long? = null
-    private var recoveryFirstFix: Pair<String, Long>? = null
     private var lastVehicleFix: Pair<String, Long>? = null
     private var lastElapsedMs: Long? = null
 
     fun reset() {
-        recoveringPhone = false
-        recoveryStarted = null
-        recoveryFirstFix = null
         lastVehicleFix = null
         lastElapsedMs = null
     }
@@ -87,39 +81,21 @@ internal class NavigationLocationFallback {
             return NavigationLocationSelection(NavigationLocationSource.NONE, reason = "clockInvalid")
         }
         lastElapsedMs = nowElapsedMs
-        val phoneUsable = usable(phone, nowElapsedMs, nowWallMs)
-        if (!phoneUsable) {
-            recoveringPhone = true
-            recoveryStarted = null
-            recoveryFirstFix = null
-        } else if (recoveringPhone) {
-            val key = phone!!.sourceEpoch to phone.measuredAtMs
-            if (recoveryStarted == null || recoveryFirstFix?.first != key.first || key.second < recoveryFirstFix!!.second) {
-                recoveryStarted = nowElapsedMs
-                recoveryFirstFix = key
+        if (usable(vehicle, nowElapsedMs, nowWallMs)) {
+            val fix = vehicle!!
+            val key = fix.sourceEpoch to fix.measuredAtMs
+            val previous = lastVehicleFix
+            if (previous?.first == key.first && key.second < previous.second) {
+                return NavigationLocationSelection(NavigationLocationSource.NONE, reason = "vehicleTimeReversed")
             }
-            if (nowElapsedMs - recoveryStarted!! >= 2000 && key.second > recoveryFirstFix!!.second) {
-                recoveringPhone = false
-            }
+            val newFix = key != previous
+            if (newFix) lastVehicleFix = key
+            return NavigationLocationSelection(NavigationLocationSource.VEHICLE,
+                if (newFix) fix else null, if (newFix) "vehiclePrimary" else "awaitingNewVehicleFix")
         }
-        if (phoneUsable && !recoveringPhone) {
-            recoveryStarted = null
-            recoveryFirstFix = null
-            return NavigationLocationSelection(NavigationLocationSource.PHONE, reason = "phoneHealthy")
+        if (usable(phone, nowElapsedMs, nowWallMs)) {
+            return NavigationLocationSelection(NavigationLocationSource.PHONE, reason = "phoneFallback")
         }
-        if (!usable(vehicle, nowElapsedMs, nowWallMs)) {
-            return NavigationLocationSelection(NavigationLocationSource.NONE,
-                reason = if (phoneUsable) "awaitingPhoneRecovery" else "noQualifiedLocation")
-        }
-        val fix = vehicle!!
-        val key = fix.sourceEpoch to fix.measuredAtMs
-        val previous = lastVehicleFix
-        if (previous?.first == key.first && key.second < previous.second) {
-            return NavigationLocationSelection(NavigationLocationSource.NONE, reason = "vehicleTimeReversed")
-        }
-        val newFix = key != previous
-        if (newFix) lastVehicleFix = key
-        return NavigationLocationSelection(NavigationLocationSource.VEHICLE,
-            if (newFix) fix else null, if (newFix) "vehicleFallback" else "awaitingNewVehicleFix")
+        return NavigationLocationSelection(NavigationLocationSource.NONE, reason = "noQualifiedLocation")
     }
 }

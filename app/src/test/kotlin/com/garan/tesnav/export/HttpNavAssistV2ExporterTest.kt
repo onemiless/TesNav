@@ -79,7 +79,7 @@ class HttpNavAssistV2ExporterTest {
     }
 
     @Test
-    fun `owner handshake sends inactive before active and repeats after expired UDP or failed HTTP`() {
+    fun `owner handshake survives UDP ACK loss while HTTP failure resets it`() {
         for (udp in listOf(true, false)) {
             val now = java.util.concurrent.atomic.AtomicLong(0L)
             val sent = LinkedBlockingQueue<NavAssistV2Snapshot>()
@@ -105,8 +105,9 @@ class HttpNavAssistV2ExporterTest {
             try {
                 exporter.start()
                 val packets = (1..4).map { requireNotNull(sent.poll(3, TimeUnit.SECONDS)) }
-                assertEquals(listOf(false, true, false, true), packets.map { it.routeActive })
-                assertEquals(listOf(0L, packets[1].maneuverEventId, 0L, packets[1].maneuverEventId), packets.map { it.maneuverEventId })
+                val expected = if (udp) listOf(false, true, true, true) else listOf(false, true, false, true)
+                assertEquals(expected, packets.map { it.routeActive })
+                assertEquals(expected.map { if (it) packets[1].maneuverEventId else 0L }, packets.map { it.maneuverEventId })
                 assertTrue(packets[1].maneuverEventId > 0)
                 assertEquals(1, packets.map { it.sessionId }.toSet().size)
                 assertEquals(listOf(1L, 2L, 3L, 4L), packets.map { it.sequence })
@@ -115,7 +116,7 @@ class HttpNavAssistV2ExporterTest {
     }
 
     @Test
-    fun `confirmed UDP owner survives bounded ACK loss without changing the event`() {
+    fun `confirmed UDP owner survives ACK loss and clock changes without changing the event`() {
         for (age in listOf(1L, 600L, 1_199L, 1_200L, -1L)) {
             val now = java.util.concurrent.atomic.AtomicLong(0L)
             val sent = LinkedBlockingQueue<NavAssistV2Snapshot>()
@@ -134,16 +135,15 @@ class HttpNavAssistV2ExporterTest {
             try {
                 exporter.start()
                 val packets = (1..4).map { requireNotNull(sent.poll(3, TimeUnit.SECONDS)) }
-                val retained = age in 0L until 1_200L
-                assertEquals(listOf(false, true, retained, true), packets.map { it.routeActive })
-                if (retained) assertEquals(packets[1].maneuverEventId, packets[2].maneuverEventId)
+                assertEquals(listOf(false, true, true, true), packets.map { it.routeActive })
+                assertEquals(packets[1].maneuverEventId, packets[2].maneuverEventId)
                 assertEquals(1, packets.map { it.sessionId }.toSet().size)
             } finally { exporter.stop() }
         }
     }
 
     @Test
-    fun `UDP owner expires before sending after a publisher pause even without failed ACK`() {
+    fun `publisher pause does not replace a confirmed UDP owner`() {
         val now = java.util.concurrent.atomic.AtomicLong(0L)
         val prepared = AtomicInteger()
         val sent = LinkedBlockingQueue<NavAssistV2Snapshot>()
@@ -160,12 +160,12 @@ class HttpNavAssistV2ExporterTest {
         )
         try {
             exporter.start()
-            assertEquals(listOf(false, false, true), (1..3).map { requireNotNull(sent.poll(3, TimeUnit.SECONDS)).routeActive })
+            assertEquals(listOf(false, true, true), (1..3).map { requireNotNull(sent.poll(3, TimeUnit.SECONDS)).routeActive })
         } finally { exporter.stop() }
     }
 
     @Test
-    fun `repeated UDP failures do not renew the lease and require full reconfirmation`() {
+    fun `intermittent UDP failures do not restart owner acquisition`() {
         val now = java.util.concurrent.atomic.AtomicLong(0L)
         val sent = LinkedBlockingQueue<NavAssistV2Snapshot>()
         val calls = AtomicInteger()
@@ -187,7 +187,43 @@ class HttpNavAssistV2ExporterTest {
         try {
             exporter.start()
             val packets = (1..7).map { requireNotNull(sent.poll(3, TimeUnit.SECONDS)) }
-            assertEquals(listOf(false, true, true, true, false, false, true), packets.map { it.routeActive })
+            assertEquals(listOf(false, true, true, true, true, true, true), packets.map { it.routeActive })
+            assertEquals(packets[1].maneuverEventId, packets.last().maneuverEventId)
+        } finally { exporter.stop() }
+    }
+
+    @Test
+    fun `continuous UDP reply loss does not disable confirmed navigation`() {
+        val now = java.util.concurrent.atomic.AtomicLong(0L)
+        val prepared = AtomicInteger()
+        val sent = LinkedBlockingQueue<NavAssistV2Snapshot>()
+        val calls = AtomicInteger()
+        val exporter = HttpNavAssistV2Exporter(
+            config = NavAssistV2ExportConfig(baseUrl = ""),
+            stateProvider = {
+                when (prepared.incrementAndGet()) {
+                    3 -> now.set(6_002L)
+                    5 -> now.set(9_003L)
+                }
+                activeState()
+            },
+            identity = identity,
+            endpointDiscovery = NavAssistV2EndpointDiscovery { NavAssistV2DiscoveryResult.NotFound },
+            pinnedDeviceProvider = { null }, useUnauthenticatedUdp = true,
+            requireOwnerHandshake = true, monotonicMs = now::get,
+            udpClient = NavAssistV3UdpClient { body, _, _ ->
+                sent.put(Gson().fromJson(String(body, Charsets.UTF_8), NavAssistV2Snapshot::class.java))
+                when (calls.incrementAndGet()) {
+                    1 -> { now.set(3_001L); NavAssistV3UdpAck("192.168.53.232", null) }
+                    2, 3 -> null
+                    else -> NavAssistV3UdpAck("192.168.53.232", null)
+                }
+            },
+        )
+        try {
+            exporter.start()
+            val packets = (1..6).map { requireNotNull(sent.poll(3, TimeUnit.SECONDS)) }
+            assertEquals(listOf(false, true, true, true, true, true), packets.map { it.routeActive })
             assertEquals(packets[1].maneuverEventId, packets.last().maneuverEventId)
         } finally { exporter.stop() }
     }

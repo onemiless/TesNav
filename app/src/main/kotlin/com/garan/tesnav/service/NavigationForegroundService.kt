@@ -6,7 +6,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
@@ -41,6 +43,7 @@ import com.garan.tesnav.homeassistant.TeslaNavigationDestination
 import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.model.NavigationState
 import com.garan.tesnav.model.OemVehicleLaneState
+import com.garan.tesnav.model.TrafficLightObservation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -104,6 +107,7 @@ class NavigationForegroundService : Service() {
     private var failedTeslaDestination: TeslaNavigationDestination? = null
     private var lastNotificationContent: String? = null
     private var lastNavAssistDiagnosticKey: String? = null
+    private var trafficLightReceiver: BroadcastReceiver? = null
 
     inner class LocalBinder : Binder() {
         fun getService(): NavigationForegroundService = this@NavigationForegroundService
@@ -126,6 +130,7 @@ class NavigationForegroundService : Service() {
         AMapLocationClient.updatePrivacyAgree(applicationContext, true)
 
         stateStore = NavigationStateStore()
+        registerTrafficLightReceiver()
         commaStateStore = CommaStateStore()
         homeAssistantClient = HomeAssistantNavigationClient()
         // A persisted preference is not authority to resume an interrupted driving event.
@@ -253,6 +258,8 @@ class NavigationForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        trafficLightReceiver?.let { runCatching { unregisterReceiver(it) } }
+        trafficLightReceiver = null
         locationBridge?.close()
         if (::laneSpeech.isInitialized) laneSpeech.close()
         exporterObservationJobs.forEach(Job::cancel)
@@ -264,6 +271,31 @@ class NavigationForegroundService : Service() {
         releaseWakeLock()
         scope.cancel()
         super.onDestroy()
+    }
+
+    private fun registerTrafficLightReceiver() {
+        if (trafficLightReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val extras = intent?.extras ?: return
+                if (extras.get("KEY_TYPE")?.toString()?.toIntOrNull() != 60073) return
+                val status = extras.get("trafficLightStatus")?.toString()?.toIntOrNull() ?: return
+                stateStore.update {
+                    copy(trafficLight = TrafficLightObservation(
+                        status = status,
+                        direction = extras.get("dir")?.toString()?.toIntOrNull(),
+                        countdownSeconds = extras.get("redLightCountDownSeconds")?.toString()?.toIntOrNull(),
+                        observedAtMs = System.currentTimeMillis(),
+                    ))
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction("AUTONAVI_STANDARD_BROADCAST_SEND")
+            addAction("AUTONAVI_STANDARD_BROADCAST_RECV")
+        }
+        ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        trafficLightReceiver = receiver
     }
 
     /** Rebuilds both exporters so a token change takes effect without reinstalling or restarting the app. */

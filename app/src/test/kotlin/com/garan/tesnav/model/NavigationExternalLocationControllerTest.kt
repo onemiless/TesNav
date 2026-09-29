@@ -6,19 +6,19 @@ import org.junit.Test
 class NavigationExternalLocationControllerTest {
     @Test fun `fresh phone callbacks cannot prevent fallback while phone satellites are weak`() {
         val sink = Sink(); val c = NavigationExternalLocationController(sink)
-        assertEquals(NavigationLocationSource.PHONE, c.update(fix(100), fix(100), true, 100, 10100).source)
+        assertEquals(NavigationLocationSource.VEHICLE, c.update(fix(100), fix(100), true, 100, 10100).source)
         assertEquals(NavigationLocationSource.VEHICLE,
             c.update(fix(200), fix(200), true, 200, 10200, phoneSignalWeak=true).source)
-        assertEquals(listOf("enable:true", "fix:10200"), sink.calls)
+        assertEquals(listOf("enable:true", "fix:10100", "fix:10200"), sink.calls)
     }
-    @Test fun `weak phone cannot recover from raw heartbeat alone but strong independent recovery can`() {
+    @Test fun `vehicle remains primary regardless of phone weak callback`() {
         val c = NavigationExternalLocationController(Sink())
         c.update(fix(100), fix(100), true, 100, 10100, phoneSignalWeak=true)
         assertEquals(NavigationLocationSource.VEHICLE,
             c.update(fix(3100), fix(3100), true, 3100, 13100, phoneSignalWeak=true).source)
         assertEquals(NavigationLocationSource.VEHICLE,
             c.update(fix(3200), fix(3200), true, 3200, 13200, phoneSignalWeak=false).source)
-        assertEquals(NavigationLocationSource.PHONE,
+        assertEquals(NavigationLocationSource.VEHICLE,
             c.update(fix(5200), fix(5200), true, 5200, 15200, phoneSignalWeak=false).source)
     }
     @Test fun `phone weak state cannot poison vehicle or clear absent vehicle data`() {
@@ -62,11 +62,11 @@ class NavigationExternalLocationControllerTest {
         assertEquals("enable:false", sink.calls.last())
         assertNull(c.injectedFix)
     }
-    @Test fun `phone recovery disables external mode and stop resets it`() {
+    @Test fun `phone fallback disables external mode and stop resets it`() {
         val sink = Sink(); val c = NavigationExternalLocationController(sink)
         c.update(null, fix(100), true, 100, 10100)
         c.update(fix(1100), fix(1100), true, 1100, 11100)
-        assertEquals(NavigationLocationSource.PHONE, c.update(fix(3100), fix(3100), true, 3100, 13100).source)
+        assertEquals(NavigationLocationSource.PHONE, c.update(fix(3100), null, true, 3100, 13100).source)
         assertEquals("enable:false", sink.calls.last())
         c.update(null, fix(6100), true, 6100, 16100)
         c.reset()

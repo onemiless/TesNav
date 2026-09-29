@@ -1,6 +1,7 @@
 package com.garan.tesnav.export
 
 import com.garan.tesnav.model.NavigationMode
+import com.garan.tesnav.model.NavigationManeuver
 import com.garan.tesnav.model.NavigationState
 import com.garan.tesnav.util.NavigationMappers
 import com.google.gson.Gson
@@ -104,6 +105,8 @@ data class NavAssistV2Guidance(
     val routeNoticeType: String?,
     val routeNoticeDistanceM: Int?,
     val routeNoticeObservedAtMs: Long?,
+    val turnSignalHold: Boolean? = null,
+    val turnSignalCountdownS: Int? = null,
 )
 
 data class NavAssistV2Lanes(
@@ -154,6 +157,20 @@ class NavAssistV2Session(
 }
 
 object NavAssistV2Mapper {
+    private fun trafficLightTurnHold(state: NavigationState, sourceWallTimeMs: Long, validForMs: Long): Pair<Boolean?, Int?> {
+        val observation = state.trafficLight ?: return null to null
+        val ageMs = sourceWallTimeMs - observation.observedAtMs
+        if (ageMs !in 0..validForMs || observation.status != 2) return null to null
+        val directionMatches = when (state.maneuver) {
+            NavigationManeuver.TURN_LEFT, NavigationManeuver.SLIGHT_LEFT, NavigationManeuver.SHARP_LEFT -> observation.direction == 1
+            NavigationManeuver.U_TURN_LEFT -> observation.direction == 3
+            NavigationManeuver.TURN_RIGHT, NavigationManeuver.SLIGHT_RIGHT, NavigationManeuver.SHARP_RIGHT -> observation.direction == 2
+            else -> false
+        }
+        val countdown = observation.countdownSeconds?.takeIf { it in 0..3_600 }
+        return if (directionMatches && countdown != null) true to countdown else null to null
+    }
+
     fun snapshot(
         state: NavigationState,
         sessionId: String,
@@ -162,6 +179,7 @@ object NavAssistV2Mapper {
         validForMs: Long,
     ): NavAssistV2Snapshot {
         val maneuver = NavigationMappers.maneuverWireValue(state.maneuver)
+        val (turnSignalHold, turnSignalCountdownS) = trafficLightTurnHold(state, sourceWallTimeMs, validForMs)
         val location = location(state)
         val guidance = state.guidanceObservedAtMs?.let { observedAtMs ->
             NavAssistV2Guidance(
@@ -190,6 +208,8 @@ object NavAssistV2Mapper {
                     it in 0..NavAssistV2Protocol.MAX_MANEUVER_DISTANCE_M
                 },
                 routeNoticeObservedAtMs = state.routeNotice?.observedAtMs?.takeIf { it > 0L },
+                turnSignalHold = turnSignalHold,
+                turnSignalCountdownS = turnSignalCountdownS,
             )
         }
         val routeActive = state.navAssistControlAllowed && state.routePlanned &&

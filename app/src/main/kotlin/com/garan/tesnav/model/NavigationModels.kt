@@ -88,6 +88,13 @@ data class RouteNoticeState(
     val observedAtMs: Long = 0L,
 )
 
+data class TrafficLightObservation(
+    val status: Int,
+    val direction: Int?,
+    val countdownSeconds: Int?,
+    val observedAtMs: Long,
+)
+
 /** Schema-compatible latest-state snapshot consumed by Comma. */
 data class NavigationState(
     val timestamp: Long = System.currentTimeMillis(),
@@ -123,6 +130,7 @@ data class NavigationState(
     // payload remains schema compatible with existing receivers.
     @Transient val locationObservedAtMs: Long? = null,
     @Transient val locationReceivedElapsedMs: Long? = null,
+    @Transient val locationSourceStatus: String = "none",
     @Transient val guidanceReceivedElapsedMs: Long? = null,
     // Matching SDK callback delivery, separate from changed guidance/progress above.
     @Transient val guidanceCallbackElapsedMs: Long? = null,
@@ -148,6 +156,7 @@ data class NavigationState(
     @Transient val parallelRoadStatus: RoadLayerStatus = RoadLayerStatus.UNKNOWN,
     @Transient val elevatedRoadStatus: RoadLayerStatus = RoadLayerStatus.UNKNOWN,
     @Transient val routeNotice: RouteNoticeState? = null,
+    @Transient val trafficLight: TrafficLightObservation? = null,
     @Transient val routeRevision: Long = 0L,
     @Transient val routeRecalculating: Boolean = false,
     @Transient val routeChoices: List<RouteChoice> = emptyList(),
