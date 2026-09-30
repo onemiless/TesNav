@@ -237,9 +237,9 @@ class NavigationActivity : Activity() {
         addView(settingsButton, leftButtonParams(stackLevel = 2))
         addView(debugButton, leftButtonParams(stackLevel = 3))
         addView(sourceButton, FrameLayout.LayoutParams(dp(132), dp(52)).apply {
-            gravity = Gravity.BOTTOM or Gravity.END
+            gravity = Gravity.TOP or Gravity.END
             marginEnd = dp(16)
-            bottomMargin = dp(16)
+            topMargin = dp(22)
         })
     }
 
