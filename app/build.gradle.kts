@@ -26,6 +26,7 @@ android {
 
         manifestPlaceholders["AMAP_API_KEY"] =
             providers.gradleProperty("AMAP_API_KEY").orNull ?: ""
+        manifestPlaceholders["APP_NAME"] = "TesNav"
         buildConfigField("boolean", "EXPORT_ENABLED", providers.gradleProperty("EXPORT_ENABLED").orNull ?: "true")
         buildConfigField("String", "WEBSOCKET_URL", "\"${providers.gradleProperty("WEBSOCKET_URL").orNull ?: "ws://192.168.53.232:7766/amap-navigation"}\"")
         buildConfigField("String", "API_TOKEN", "\"${providers.gradleProperty("API_TOKEN").orNull ?: ""}\"")
@@ -51,6 +52,16 @@ android {
     }
 
     buildTypes {
+        create("tenengkai") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".tenengkai"
+            matchingFallbacks += listOf("debug")
+            manifestPlaceholders["APP_NAME"] = "特能开"
+            manifestPlaceholders["AMAP_API_KEY"] =
+                providers.gradleProperty("TENENGKAI_AMAP_API_KEY").orNull
+                    ?: providers.gradleProperty("AMAP_API_KEY").orNull
+                    ?: ""
+        }
         release {
             optimization {
                 enable = false

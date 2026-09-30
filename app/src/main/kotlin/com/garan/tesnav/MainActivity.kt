@@ -56,6 +56,7 @@ import com.garan.tesnav.search.selectLocationFailure
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.service.NavigationDataSource
 import com.garan.tesnav.ui.NavigationStateDialog
+import com.garan.tesnav.ui.NavigationSourceMenu
 import com.garan.tesnav.ui.SettingsDialog
 import com.garan.tesnav.config.AmapConfiguration
 import com.garan.tesnav.search.SearchHistory
@@ -169,7 +170,7 @@ class MainActivity : Activity(), AddressLookupView {
         debugButton = floatingIconButton(R.drawable.ic_bug_report, "查看 NavigationState").apply {
             isEnabled = false
         }
-        sourceButton = actionButton("来源：API").apply { textSize = 14f }
+        sourceButton = actionButton(NavigationDataSource.AMAP_API.buttonText).apply { textSize = 14f }
         destinationInput = EditText(this).apply {
             hint = "输入目的地地址或地点"
             setSingleLine(true)
@@ -322,8 +323,12 @@ class MainActivity : Activity(), AddressLookupView {
 
     private fun configureActions() {
         sourceButton.setOnClickListener {
-            val source = runtimeService?.toggleNavigationDataSource() ?: return@setOnClickListener
-            if (source == NavigationDataSource.AMAP_AUTO) openNavigationPage()
+            val service = runtimeService ?: return@setOnClickListener
+            NavigationSourceMenu.show(this, sourceButton, service.navigationDataSource.value) { source ->
+                service.selectNavigationDataSource(source)?.let(::toast) ?: run {
+                    if (source == NavigationDataSource.AMAP_AUTO) openNavigationPage()
+                }
+            }
         }
         planButton.setOnClickListener { destination?.let(::openNavigationPage) }
         searchButton.setOnClickListener(::searchDestinationAddress)
@@ -386,7 +391,7 @@ class MainActivity : Activity(), AddressLookupView {
         }
         destinationInput.setOnFocusChangeListener { _, focused -> if (focused) showRecentSearches() }
         settingsButton.setOnClickListener {
-            android.app.AlertDialog.Builder(this).setTitle("TesNav 设置")
+            android.app.AlertDialog.Builder(this).setTitle("${applicationInfo.loadLabel(packageManager)} 设置")
                 .setItems(arrayOf("高德 Key 与配置指南", "清空搜索历史", "连接与导航设置")) { _, index ->
                     when (index) {
                         0 -> if (currentState.navigationMode == NavigationMode.IDLE) {
@@ -618,7 +623,7 @@ class MainActivity : Activity(), AddressLookupView {
         }
         sourceJob = activityScope.launch {
             service.navigationDataSource.collect { source ->
-                sourceButton.text = if (source == NavigationDataSource.AMAP_AUTO) "来源：车机" else "来源：API"
+                sourceButton.text = source.buttonText
             }
         }
     }

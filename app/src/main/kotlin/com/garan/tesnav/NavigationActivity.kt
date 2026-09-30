@@ -39,6 +39,7 @@ import com.garan.tesnav.model.RouteChoice
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.service.NavigationDataSource
 import com.garan.tesnav.ui.NavigationStateDialog
+import com.garan.tesnav.ui.NavigationSourceMenu
 import com.garan.tesnav.ui.LaneGuidanceView
 import com.garan.tesnav.ui.SettingsDialog
 import com.garan.tesnav.config.AmapConfiguration
@@ -157,7 +158,7 @@ class NavigationActivity : Activity() {
         simulationButton = actionButton("模拟导航")
         speechButton = actionButton("静音")
         routeSwitchButton = actionButton("切换路线")
-        sourceButton = actionButton("来源：API").apply { textSize = 14f }
+        sourceButton = actionButton(NavigationDataSource.AMAP_API.buttonText).apply { textSize = 14f }
         routeChoiceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -262,7 +263,12 @@ class NavigationActivity : Activity() {
     }
 
     private fun configureActions() {
-        sourceButton.setOnClickListener { runtimeService?.toggleNavigationDataSource() }
+        sourceButton.setOnClickListener {
+            val service = runtimeService ?: return@setOnClickListener
+            NavigationSourceMenu.show(this, sourceButton, service.navigationDataSource.value) { source ->
+                service.selectNavigationDataSource(source)?.let(::toast)
+            }
+        }
         endNavigationButton.setOnClickListener { runtimeService?.stopNavigation() }
         realtimeButton.setOnClickListener {
             if (runtimeService?.startRealtime() != true) toast("启动导航失败")
@@ -331,7 +337,7 @@ class NavigationActivity : Activity() {
             ) { apiState, autoState, source -> Triple(apiState, autoState, source) }
                 .collect { (apiState, autoState, source) ->
                     currentSource = source
-                    sourceButton.text = if (source == NavigationDataSource.AMAP_AUTO) "来源：车机" else "来源：API"
+                    sourceButton.text = source.buttonText
                     renderNavigationState(if (source == NavigationDataSource.AMAP_AUTO) autoState ?: NavigationState() else apiState)
                 }
         }

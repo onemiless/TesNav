@@ -5,7 +5,19 @@ import com.garan.tesnav.model.NavigationState
 import com.garan.tesnav.model.TrafficLightObservation
 import com.garan.tesnav.util.NavigationMappers
 
-enum class NavigationDataSource { AMAP_API, AMAP_AUTO }
+enum class NavigationDataSource(
+    val displayName: String,
+    val integrated: Boolean,
+) {
+    AMAP_API("高德 API", true),
+    AMAP_AUTO("高德车机", true),
+    TENCENT_API("腾讯 API", false),
+    GOOGLE_API("Google API", false),
+    ;
+
+    val buttonText: String get() = "来源：$displayName"
+    val menuText: String get() = if (integrated) displayName else "$displayName（待配置）"
+}
 
 /** Latest lossless-enough snapshot of one Amap Auto broadcast interface. */
 internal data class AmapAutoBroadcastSnapshot(

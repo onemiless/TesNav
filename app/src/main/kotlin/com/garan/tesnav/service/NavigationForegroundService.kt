@@ -124,7 +124,8 @@ class NavigationForegroundService : Service() {
         super.onCreate()
         mutableNavigationDataSource.value = runCatching {
             NavigationDataSource.valueOf(preferences().getString(NAVIGATION_SOURCE_KEY, null).orEmpty())
-        }.getOrDefault(NavigationDataSource.AMAP_API)
+        }.getOrDefault(NavigationDataSource.AMAP_API).takeIf { it.integrated }
+            ?: NavigationDataSource.AMAP_API
         if (mutableNavigationDataSource.value == NavigationDataSource.AMAP_AUTO) {
             sourceGate.arm(android.os.SystemClock.elapsedRealtime())
         }
@@ -270,17 +271,14 @@ class NavigationForegroundService : Service() {
         if (enabled) startHomeAssistant() else homeAssistantClient.stop()
     }
 
-    fun toggleNavigationDataSource(): NavigationDataSource {
-        val source = if (mutableNavigationDataSource.value == NavigationDataSource.AMAP_API) {
-            NavigationDataSource.AMAP_AUTO
-        } else {
-            NavigationDataSource.AMAP_API
-        }
+    fun selectNavigationDataSource(source: NavigationDataSource): String? {
+        if (!source.integrated) return "${source.displayName}接口已保留，当前构建尚未配置SDK和授权"
+        if (mutableNavigationDataSource.value == source) return null
         mutableNavigationDataSource.value = source
         sourceGate.arm(android.os.SystemClock.elapsedRealtime())
         preferences().edit().putString(NAVIGATION_SOURCE_KEY, source.name).apply()
         NavigationTrace.append(filesDir, "source selected=${source.name.lowercase()}", AMAP_AUTO_TRACE_TAG)
-        return source
+        return null
     }
 
     override fun onDestroy() {
@@ -420,10 +418,12 @@ class NavigationForegroundService : Service() {
     }
 
     private fun selectedNavigationState(): NavigationState =
-        if (mutableNavigationDataSource.value == NavigationDataSource.AMAP_AUTO) {
-            mutableAmapAutoNavigationState.value ?: NavigationState()
-        } else {
-            stateStore.state.value
+        when (mutableNavigationDataSource.value) {
+            NavigationDataSource.AMAP_API -> stateStore.state.value
+            NavigationDataSource.AMAP_AUTO -> mutableAmapAutoNavigationState.value ?: NavigationState()
+            NavigationDataSource.TENCENT_API,
+            NavigationDataSource.GOOGLE_API,
+            -> NavigationState()
         }
 
     private fun amapAutoLocationFallback(): NavigationState? {
@@ -637,6 +637,7 @@ class NavigationForegroundService : Service() {
     }
 
     private fun buildNotification(content: String): Notification {
+        val appName = applicationInfo.loadLabel(packageManager)
         val openIntent = PendingIntent.getActivity(
             this,
             0,
@@ -651,7 +652,7 @@ class NavigationForegroundService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle("TesNav 后台导航")
+            .setContentTitle("$appName 后台导航")
             .setContentText(content)
             .setContentIntent(openIntent)
             .setOngoing(true)
@@ -664,9 +665,10 @@ class NavigationForegroundService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val appName = applicationInfo.loadLabel(packageManager)
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "TesNav 后台导航",
+            "$appName 后台导航",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "保持导航回调和 WebSocket 在后台运行"

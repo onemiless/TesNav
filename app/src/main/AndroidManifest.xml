@@ -22,7 +22,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="TesNav"
+        android:label="${APP_NAME}"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <meta-data
