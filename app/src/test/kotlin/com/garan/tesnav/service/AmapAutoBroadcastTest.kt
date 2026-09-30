@@ -53,7 +53,7 @@ class AmapAutoBroadcastTest {
                 latitude = 31.2,
                 longitude = 121.5,
                 accuracy = 4f,
-                bearing = 90f,
+                bearing = null,
                 locationObservedAtMs = 990L,
                 locationReceivedElapsedMs = 490L,
             ),
@@ -67,6 +67,7 @@ class AmapAutoBroadcastTest {
                 "ROAD_TYPE" to 9,
                 "CUR_ROAD_NAME" to "当前路",
                 "NEXT_ROAD_NAME" to "下一路",
+                "CAR_DIRECTION" to 90,
                 "CUR_SPEED" to 42,
                 "LIMITED_SPEED" to 40,
                 "routeRemainTrafficLightNum" to 5,
@@ -86,6 +87,7 @@ class AmapAutoBroadcastTest {
         assertFalse(state.navAssistControlAllowed)
         assertEquals("amap_auto_pending", state.navAssistSourceStatus)
         assertEquals(4f, state.accuracy)
+        assertEquals(90f, state.bearing)
         assertEquals(state.acceptedPathId, state.guidancePathId)
         assertEquals(0, state.currentStepIndex)
         assertEquals(state.currentStepIndex, state.guidanceStepIndex)
@@ -126,12 +128,12 @@ class AmapAutoBroadcastTest {
                 latitude = 31.2,
                 longitude = 121.5,
                 accuracy = 4f,
-                bearing = 90f,
+                bearing = null,
                 locationObservedAtMs = 9_900L,
                 locationReceivedElapsedMs = 900L,
             ),
             extras = mapOf("ROUTE_ALL_DIS" to 1_000, "SEG_REMAIN_DIS" to 80, "ICON" to 2,
-                "NEXT_ROAD_NAME" to "甲路", "CUR_SPEED" to 20),
+                "NEXT_ROAD_NAME" to "甲路", "CUR_SPEED" to 20, "CAR_DIRECTION" to 90),
             observedAtMs = 10_000L,
             receivedElapsedMs = 1_000L,
             sourceBudgetMs = 2_000L,

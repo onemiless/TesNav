@@ -71,7 +71,11 @@ internal object AmapAutoBroadcast {
         val useFallbackLocation = broadcastAccuracy == null && fallbackFresh
         val latitude = if (useFallbackLocation) locationFallback?.latitude else broadcastLatitude
         val longitude = if (useFallbackLocation) locationFallback?.longitude else broadcastLongitude
-        val bearing = if (useFallbackLocation) locationFallback?.bearing else extras["CAR_DIRECTION"].asFloat()
+        val bearing = if (useFallbackLocation) {
+            locationFallback?.bearing ?: extras["CAR_DIRECTION"].asFloat()
+        } else {
+            extras["CAR_DIRECTION"].asFloat()
+        }
         val accuracy = broadcastAccuracy ?: locationFallback?.accuracy?.takeIf { fallbackFresh }
         val locationObservedAtMs = if (useFallbackLocation) locationFallback?.locationObservedAtMs else observedAtMs
         val locationReceivedElapsedMs = if (useFallbackLocation) fallbackReceivedAt else receivedElapsedMs
