@@ -44,9 +44,11 @@ internal object AmapAutoBroadcast {
 
     fun navigation(
         previous: NavigationState?,
+        locationFallback: NavigationState?,
         extras: Map<String, Any?>,
         observedAtMs: Long,
         receivedElapsedMs: Long,
+        sourceBudgetMs: Long,
     ): NavigationState {
         val icon = extras["NEW_ICON"].asInt()?.takeIf { it > 0 } ?: extras["ICON"].asInt()
         val roadType = extras["ROAD_TYPE"].asInt()
@@ -57,14 +59,48 @@ internal object AmapAutoBroadcast {
             (icon?.let { it > 0 } == true && turnDistance?.let { it > 0 } == true)
         val speed = extras["CUR_SPEED"].asFloat()?.coerceAtLeast(0f) ?: previous?.speedKph ?: 0f
         val speedLimit = extras["LIMITED_SPEED"].asInt()?.takeIf { it > 0 }
-        val latitude = extras["CAR_LATITUDE"].asDouble()?.takeIf { it in -90.0..90.0 }
-        val longitude = extras["CAR_LONGITUDE"].asDouble()?.takeIf { it in -180.0..180.0 }
+        val broadcastLatitude = extras["CAR_LATITUDE"].asDouble()?.takeIf { it in -90.0..90.0 }
+        val broadcastLongitude = extras["CAR_LONGITUDE"].asDouble()?.takeIf { it in -180.0..180.0 }
+        val broadcastAccuracy = (extras["CAR_ACCURACY"] ?: extras["GPS_ACCURACY"] ?: extras["ACCURACY"])
+            .asFloat()?.takeIf { it.isFinite() && it > 0f }
+        val fallbackReceivedAt = locationFallback?.locationReceivedElapsedMs
+        val fallbackFresh = fallbackReceivedAt != null && fallbackReceivedAt <= receivedElapsedMs &&
+            receivedElapsedMs - fallbackReceivedAt <= sourceBudgetMs && locationFallback.accuracy?.let {
+                it.isFinite() && it > 0f
+            } == true
+        val useFallbackLocation = broadcastAccuracy == null && fallbackFresh
+        val latitude = if (useFallbackLocation) locationFallback?.latitude else broadcastLatitude
+        val longitude = if (useFallbackLocation) locationFallback?.longitude else broadcastLongitude
+        val bearing = if (useFallbackLocation) locationFallback?.bearing else extras["CAR_DIRECTION"].asFloat()
+        val accuracy = broadcastAccuracy ?: locationFallback?.accuracy?.takeIf { fallbackFresh }
+        val locationObservedAtMs = if (useFallbackLocation) locationFallback?.locationObservedAtMs else observedAtMs
+        val locationReceivedElapsedMs = if (useFallbackLocation) fallbackReceivedAt else receivedElapsedMs
+        val maneuver = NavigationMappers.maneuver(icon, roadType)
+        val previousActive = previous?.routePlanned == true && previous.navigationMode == NavigationMode.REALTIME
+        val newRoute = routeActive && !previousActive
+        val maneuverChanged = previousActive && routeActive &&
+            (previous?.maneuver != maneuver || previous.nextRoad != (extras["NEXT_ROAD_NAME"].asText() ?: previous.nextRoad))
+        val distanceReset = previousActive && routeActive && turnDistance != null &&
+            previous?.nextTurnDistanceMeters?.let { turnDistance > it + 50 } == true
+        val stepIndex = when {
+            !routeActive -> null
+            newRoute -> 0
+            maneuverChanged || distanceReset -> (previous?.currentStepIndex ?: 0) + 1
+            else -> previous?.currentStepIndex ?: 0
+        }
+        val pathId = when {
+            !routeActive -> null
+            newRoute -> observedAtMs.coerceAtLeast(1L)
+            else -> previous?.acceptedPathId ?: observedAtMs.coerceAtLeast(1L)
+        }
+        val routeRevision = if (newRoute) (previous?.routeRevision ?: 0L) + 1L else previous?.routeRevision ?: 0L
 
         return NavigationState(
             navigationMode = if (routeActive) NavigationMode.REALTIME else NavigationMode.IDLE,
             latitude = latitude ?: previous?.latitude,
             longitude = longitude ?: previous?.longitude,
-            bearing = extras["CAR_DIRECTION"].asFloat() ?: previous?.bearing,
+            accuracy = accuracy ?: previous?.accuracy,
+            bearing = bearing ?: previous?.bearing,
             locationTime = observedAtMs,
             speedKph = speed,
             currentRoad = extras["CUR_ROAD_NAME"].asText() ?: previous?.currentRoad,
@@ -77,19 +113,24 @@ internal object AmapAutoBroadcast {
             speedLimitKph = speedLimit,
             isOverspeed = speedLimit?.let { speed > it } ?: false,
             routePlanned = routeActive,
-            locationObservedAtMs = observedAtMs,
-            locationReceivedElapsedMs = receivedElapsedMs,
+            locationObservedAtMs = locationObservedAtMs,
+            locationReceivedElapsedMs = locationReceivedElapsedMs,
             locationSourceStatus = "amap_auto",
             guidanceReceivedElapsedMs = receivedElapsedMs,
             guidanceCallbackElapsedMs = receivedElapsedMs,
+            acceptedPathId = pathId,
+            guidancePathId = pathId,
             navAssistControlAllowed = false,
-            navAssistSourceStatus = "amap_auto_display",
+            navAssistSourceStatus = "amap_auto_pending",
             guidanceObservedAtMs = observedAtMs,
             routeObservedAtMs = observedAtMs,
             routeMatched = routeActive,
-            maneuver = NavigationMappers.maneuver(icon, roadType),
+            maneuver = maneuver,
+            currentStepIndex = stepIndex,
+            guidanceStepIndex = stepIndex,
             currentRoadType = roadType,
             trafficLight = previous?.trafficLight,
+            routeRevision = routeRevision,
         )
     }
 

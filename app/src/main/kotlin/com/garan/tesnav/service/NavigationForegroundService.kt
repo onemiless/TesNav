@@ -125,6 +125,9 @@ class NavigationForegroundService : Service() {
         mutableNavigationDataSource.value = runCatching {
             NavigationDataSource.valueOf(preferences().getString(NAVIGATION_SOURCE_KEY, null).orEmpty())
         }.getOrDefault(NavigationDataSource.AMAP_API)
+        if (mutableNavigationDataSource.value == NavigationDataSource.AMAP_AUTO) {
+            sourceGate.arm(android.os.SystemClock.elapsedRealtime())
+        }
         createNotificationChannel()
         promoteToForeground("正在启动导航服务")
         if (!AmapConfiguration.prepare(applicationContext)) {
@@ -168,7 +171,7 @@ class NavigationForegroundService : Service() {
         locationBridge = NavigationLocationBridge(this, repository)
         scope.launch {
             while (true) {
-                locationBridge?.update(stateStore.state.value, mutableOemVehicleLaneState.value)
+                locationBridge?.update(selectedNavigationState(), mutableOemVehicleLaneState.value)
                 kotlinx.coroutines.delay(200)
             }
         }
@@ -274,6 +277,7 @@ class NavigationForegroundService : Service() {
             NavigationDataSource.AMAP_API
         }
         mutableNavigationDataSource.value = source
+        sourceGate.arm(android.os.SystemClock.elapsedRealtime())
         preferences().edit().putString(NAVIGATION_SOURCE_KEY, source.name).apply()
         NavigationTrace.append(filesDir, "source selected=${source.name.lowercase()}", AMAP_AUTO_TRACE_TAG)
         return source
@@ -317,9 +321,11 @@ class NavigationForegroundService : Service() {
                 if (keyType == AMAP_AUTO_NAVIGATION_TYPE) {
                     mutableAmapAutoNavigationState.value = AmapAutoBroadcast.navigation(
                         previous = mutableAmapAutoNavigationState.value,
+                        locationFallback = amapAutoLocationFallback(),
                         extras = values,
                         observedAtMs = observedAtMs,
                         receivedElapsedMs = android.os.SystemClock.elapsedRealtime(),
+                        sourceBudgetMs = BuildConfig.NAV_ASSIST_SOURCE_BUDGET_MS,
                     )
                 }
                 if (keyType != AMAP_AUTO_TRAFFIC_LIGHT_TYPE) return
@@ -376,16 +382,25 @@ class NavigationForegroundService : Service() {
                 apiToken = BuildConfig.API_TOKEN,
                 intervalMs = BuildConfig.EXPORT_INTERVAL_MS,
             ),
-            stateProvider = { stateStore.state.value },
+            stateProvider = { selectedNavigationState() },
             onCommaState = commaStateStore::set,
         )
         navAssistV2Exporter = HttpNavAssistV2Exporter(
             config = navAssistV2Config,
             navigationSession = navAssistSession,
             stateProvider = {
-                val prepared = sourceGate.prepare(stateStore.state.value, android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis())
+                val selected = selectedNavigationState()
+                val prepared = sourceGate.prepare(selected, android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis())
                 val sourceStatus = sourceGate.reason
-                if (stateStore.state.value.navAssistSourceStatus != sourceStatus ||
+                if (mutableNavigationDataSource.value == NavigationDataSource.AMAP_AUTO) {
+                    if (selected.navAssistSourceStatus != sourceStatus ||
+                        selected.navAssistControlAllowed != prepared.navAssistControlAllowed) {
+                        mutableAmapAutoNavigationState.value = selected.copy(
+                            navAssistSourceStatus = sourceStatus,
+                            navAssistControlAllowed = prepared.navAssistControlAllowed,
+                        )
+                    }
+                } else if (stateStore.state.value.navAssistSourceStatus != sourceStatus ||
                     stateStore.state.value.navAssistControlAllowed != prepared.navAssistControlAllowed) {
                     stateStore.update { copy(navAssistSourceStatus = sourceStatus, navAssistControlAllowed = prepared.navAssistControlAllowed) }
                 }
@@ -402,6 +417,28 @@ class NavigationForegroundService : Service() {
         observeExporterInstances()
         exporter.start()
         navAssistV2Exporter.start()
+    }
+
+    private fun selectedNavigationState(): NavigationState =
+        if (mutableNavigationDataSource.value == NavigationDataSource.AMAP_AUTO) {
+            mutableAmapAutoNavigationState.value ?: NavigationState()
+        } else {
+            stateStore.state.value
+        }
+
+    private fun amapAutoLocationFallback(): NavigationState? {
+        val fix = locationBridge?.latestPlanningLocation() ?: return stateStore.state.value
+        return NavigationState(
+            latitude = fix.latitude,
+            longitude = fix.longitude,
+            accuracy = fix.accuracyM?.toFloat(),
+            bearing = fix.bearingDeg?.toFloat(),
+            speedKph = fix.speedMps?.times(3.6)?.toFloat() ?: 0f,
+            locationTime = fix.measuredAtMs,
+            locationObservedAtMs = fix.measuredAtMs,
+            locationReceivedElapsedMs = fix.receivedElapsedMs,
+            locationSourceStatus = fix.sourceEpoch,
+        )
     }
 
     private fun observeExporterInstances() {

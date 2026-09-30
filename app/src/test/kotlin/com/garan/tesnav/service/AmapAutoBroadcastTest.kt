@@ -5,6 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.garan.tesnav.export.NavAssistV2Mapper
+import com.garan.tesnav.model.NavigationSourceGate
 
 class AmapAutoBroadcastTest {
     @Test fun `retains every extra for each Amap Auto interface`() {
@@ -44,9 +46,17 @@ class AmapAutoBroadcastTest {
         assertNull(AmapAutoBroadcast.trafficLight(mapOf("dir" to 2), 123L))
     }
 
-    @Test fun `maps the pinned jihui 10001 navigation interface for display only`() {
+    @Test fun `maps the pinned jihui 10001 navigation interface for the shared control gate`() {
         val state = AmapAutoBroadcast.navigation(
             previous = null,
+            locationFallback = com.garan.tesnav.model.NavigationState(
+                latitude = 31.2,
+                longitude = 121.5,
+                accuracy = 4f,
+                bearing = 90f,
+                locationObservedAtMs = 990L,
+                locationReceivedElapsedMs = 490L,
+            ),
             extras = mapOf(
                 "KEY_TYPE" to 10001,
                 "ROUTE_ALL_DIS" to 12_000,
@@ -63,6 +73,7 @@ class AmapAutoBroadcastTest {
             ),
             observedAtMs = 1_000L,
             receivedElapsedMs = 500L,
+            sourceBudgetMs = 2_000L,
         )
 
         assertTrue(state.routePlanned)
@@ -73,6 +84,65 @@ class AmapAutoBroadcastTest {
         assertEquals(5, state.remainingTrafficLightCount)
         assertTrue(state.isOverspeed)
         assertFalse(state.navAssistControlAllowed)
-        assertEquals("amap_auto_display", state.navAssistSourceStatus)
+        assertEquals("amap_auto_pending", state.navAssistSourceStatus)
+        assertEquals(4f, state.accuracy)
+        assertEquals(state.acceptedPathId, state.guidancePathId)
+        assertEquals(0, state.currentStepIndex)
+        assertEquals(state.currentStepIndex, state.guidanceStepIndex)
+        assertEquals(1L, state.routeRevision)
+    }
+
+    @Test fun `advances the Amap Auto maneuver identity without changing the route identity`() {
+        val first = AmapAutoBroadcast.navigation(
+            previous = null,
+            locationFallback = null,
+            extras = mapOf("ROUTE_ALL_DIS" to 1_000, "SEG_REMAIN_DIS" to 80, "ICON" to 2,
+                "NEXT_ROAD_NAME" to "甲路", "CAR_LATITUDE" to 31.2, "CAR_LONGITUDE" to 121.5,
+                "CAR_DIRECTION" to 90, "CAR_ACCURACY" to 5),
+            observedAtMs = 1_000L,
+            receivedElapsedMs = 500L,
+            sourceBudgetMs = 2_000L,
+        )
+        val next = AmapAutoBroadcast.navigation(
+            previous = first,
+            locationFallback = null,
+            extras = mapOf("ROUTE_ALL_DIS" to 1_000, "SEG_REMAIN_DIS" to 200, "ICON" to 3,
+                "NEXT_ROAD_NAME" to "乙路", "CAR_LATITUDE" to 31.2, "CAR_LONGITUDE" to 121.5,
+                "CAR_DIRECTION" to 90, "CAR_ACCURACY" to 5),
+            observedAtMs = 2_000L,
+            receivedElapsedMs = 1_500L,
+            sourceBudgetMs = 2_000L,
+        )
+
+        assertEquals(first.acceptedPathId, next.acceptedPathId)
+        assertEquals(first.routeRevision, next.routeRevision)
+        assertEquals(1, next.currentStepIndex)
+    }
+
+    @Test fun `Amap Auto receives the same control gate authority as the API source`() {
+        val state = AmapAutoBroadcast.navigation(
+            previous = null,
+            locationFallback = com.garan.tesnav.model.NavigationState(
+                latitude = 31.2,
+                longitude = 121.5,
+                accuracy = 4f,
+                bearing = 90f,
+                locationObservedAtMs = 9_900L,
+                locationReceivedElapsedMs = 900L,
+            ),
+            extras = mapOf("ROUTE_ALL_DIS" to 1_000, "SEG_REMAIN_DIS" to 80, "ICON" to 2,
+                "NEXT_ROAD_NAME" to "甲路", "CUR_SPEED" to 20),
+            observedAtMs = 10_000L,
+            receivedElapsedMs = 1_000L,
+            sourceBudgetMs = 2_000L,
+        )
+        val gate = NavigationSourceGate(sourceBudgetMs = 2_000L, progressBudgetMs = 2_000L)
+        gate.arm(900L)
+        val prepared = gate.prepare(state, nowElapsedMs = 1_000L, nowWallMs = 10_000L)
+        val snapshot = NavAssistV2Mapper.snapshot(prepared, "auto-session", 1L, 10_000L, 500L)
+
+        assertTrue(prepared.navAssistControlAllowed)
+        assertTrue(snapshot.routeActive)
+        assertTrue(snapshot.maneuverEventId != 0L)
     }
 }

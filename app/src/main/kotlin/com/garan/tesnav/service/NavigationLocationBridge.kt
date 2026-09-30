@@ -19,6 +19,7 @@ internal class NavigationLocationBridge(context: Context, private val repository
     private val coordinateConverter = CoordinateConverter(context.applicationContext)
     private val vehicle = VehicleLocationObservation()
     private var rawPhone: NavigationLocationObservation? = null
+    private var planningPhone: NavigationLocationObservation? = null
     private var listening = false
     private var active = false
     private var phoneHandbackAt: Long? = null
@@ -42,11 +43,16 @@ internal class NavigationLocationBridge(context: Context, private val repository
                 fix.copy(latitude = point.latitude, longitude = point.longitude,
                     coordinateSystem = NavigationCoordinateSystem.GCJ02)
             }.getOrNull()
+            planningPhone = planningFix
             repository.updatePlanningLocation(planningFix)
             if (location.hasSpeed() && location.hasBearing()) rawPhone = fix
         }
         override fun onProviderEnabled(provider: String) {}
-        override fun onProviderDisabled(provider: String) { rawPhone = null; repository.updatePlanningLocation(null) }
+        override fun onProviderDisabled(provider: String) {
+            rawPhone = null
+            planningPhone = null
+            repository.updatePlanningLocation(null)
+        }
         @Deprecated("Legacy callback")
         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
     }
@@ -94,9 +100,11 @@ internal class NavigationLocationBridge(context: Context, private val repository
         }
     }
 
+    fun latestPlanningLocation(): NavigationLocationObservation? = planningPhone
+
     fun close() {
         if (listening) manager.removeUpdates(listener)
-        listening = false; active = false; rawPhone = null; vehicle.reset()
+        listening = false; active = false; rawPhone = null; planningPhone = null; vehicle.reset()
         repository.updatePlanningLocation(null)
         phoneHandbackAt = null; lastSource = null; lastTraceElapsed = 0L
     }
