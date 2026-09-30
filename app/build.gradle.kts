@@ -56,7 +56,7 @@ android {
             initWith(getByName("debug"))
             applicationIdSuffix = ".tenengkai"
             matchingFallbacks += listOf("debug")
-            manifestPlaceholders["APP_NAME"] = "特能开"
+            manifestPlaceholders["APP_NAME"] = "特会开"
             manifestPlaceholders["AMAP_API_KEY"] =
                 providers.gradleProperty("TENENGKAI_AMAP_API_KEY").orNull
                     ?: providers.gradleProperty("AMAP_API_KEY").orNull
