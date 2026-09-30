@@ -626,10 +626,14 @@ class NavigationRepository(
             "callbackPathId=${info?.getPathId()} step=${info?.curStep} link=${info?.curLink} " +
                 "icon=${info?.iconType} distance=${info?.curStepRetainDistance} pathDistance=${info?.pathRetainDistance}"
         }
-        if (info != null) acceptRecalculatedPath(info)
+        if (info != null) {
+            acceptRecalculatedPath(info)
+            acceptUnannouncedRecalculatedPath(info)
+        }
         val currentState = stateStore.state.value
         if (info == null || !currentState.routePlanned || currentState.routeRecalculating ||
             !routeObservationMatches(currentState.acceptedPathId, info.getPathId(), navi?.naviPath?.pathid)) return
+        updateStructuredTrafficLight()
         val receivedElapsedMs = android.os.SystemClock.elapsedRealtime()
         val observedAtMs = System.currentTimeMillis()
         val stepIndex = info.curStep.takeIf { it >= 0 }
@@ -1015,6 +1019,33 @@ class NavigationRepository(
         clearPlannedPaths() // Old independent candidates must not be selectable after rerouting.
         routeSucceeded(path, engineReroute = true)
         traceSdk("reroute_accepted") { "callbackPathId=${info.getPathId()}" }
+    }
+
+    private fun acceptUnannouncedRecalculatedPath(info: NaviInfo) {
+        val state = stateStore.state.value
+        if (state.routeRecalculating || routeCalculationPending || !state.routePlanned ||
+            state.navigationMode !in listOf(NavigationMode.REALTIME, NavigationMode.SIMULATION)) return
+        val path = navi?.naviPath ?: return
+        val end = path.endPoint?.let { GeoPoint(it.latitude, it.longitude) }
+        if (!recalculatedRouteMatches(state.acceptedPathId, info.getPathId(), path.pathid, confirmedDestination, end)) return
+        beginEngineReroute("reroute_unannounced")
+        acceptRecalculatedPath(info)
+    }
+
+    private fun updateStructuredTrafficLight() {
+        val countdown = structuredTrafficLightCountdown(navi?.structuredInfoInNavi) ?: return
+        val observedAtMs = System.currentTimeMillis()
+        update {
+            val broadcast = trafficLight?.takeIf {
+                observedAtMs - it.observedAtMs in 0..3_000 && it.status in 2..4
+            }
+            if (broadcast != null) this else copy(trafficLight = com.garan.tesnav.model.TrafficLightObservation(
+                status = 0,
+                direction = null,
+                countdownSeconds = countdown,
+                observedAtMs = observedAtMs,
+            ))
+        }
     }
 
     override fun onArriveDestination() = update {

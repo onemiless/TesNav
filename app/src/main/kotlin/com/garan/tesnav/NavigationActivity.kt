@@ -456,7 +456,7 @@ class NavigationActivity : Activity() {
             }
         }.joinToString(" · ")
         val light = state.trafficLight?.takeIf { System.currentTimeMillis() - it.observedAtMs in 0..3_000 }?.let {
-            val status = when (it.status) { 2 -> "红灯"; 3 -> "绿灯"; 4 -> "黄灯"; else -> return@let null }
+            val status = when (it.status) { 2 -> "红灯"; 3 -> "绿灯"; 4 -> "黄灯"; else -> "信号灯" }
             val direction = when (it.direction) { 1 -> "左转"; 2 -> "右转"; 3 -> "掉头"; 4 -> "直行"; else -> null }
             val elapsedSeconds = ((System.currentTimeMillis() - it.observedAtMs) / 1000L).toInt()
             val countdown = it.countdownSeconds?.minus(elapsedSeconds)?.coerceAtLeast(0)

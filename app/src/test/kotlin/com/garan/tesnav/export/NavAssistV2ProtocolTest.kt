@@ -29,9 +29,10 @@ class NavAssistV2ProtocolTest {
     }
 
     @Test
-    fun `stale green or wrong-direction countdown cannot hold a turn signal`() {
+    fun `display-only stale green or wrong-direction countdown cannot hold a turn signal`() {
         val base = activeState()
         for (observation in listOf(
+            TrafficLightObservation(0, null, 10, 3_900L),
             TrafficLightObservation(3, 2, 10, 3_900L),
             TrafficLightObservation(2, 1, 10, 3_900L),
             TrafficLightObservation(2, 2, 10, 3_499L),
