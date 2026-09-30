@@ -37,6 +37,7 @@ import com.garan.tesnav.export.NAVASSIST_UDP_RECEIVE_WINDOW_MS
 import com.garan.tesnav.export.NavAssistV2Protocol
 import com.garan.tesnav.model.RouteChoice
 import com.garan.tesnav.service.NavigationForegroundService
+import com.garan.tesnav.service.NavigationDataSource
 import com.garan.tesnav.ui.NavigationStateDialog
 import com.garan.tesnav.ui.LaneGuidanceView
 import com.garan.tesnav.ui.SettingsDialog
@@ -46,6 +47,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -66,6 +68,7 @@ class NavigationActivity : Activity() {
     private lateinit var routeSwitchButton: Button
     private lateinit var settingsButton: ImageButton
     private lateinit var debugButton: ImageButton
+    private lateinit var sourceButton: Button
     private lateinit var overviewButton: OverviewButtonView
     private lateinit var laneGuidanceView: LaneGuidanceView
     private lateinit var navigationSummaryView: TextView
@@ -77,6 +80,7 @@ class NavigationActivity : Activity() {
     private var stateJob: Job? = null
     private var oemLaneJob: Job? = null
     private var currentState = NavigationState()
+    private var currentSource = NavigationDataSource.AMAP_API
     private var currentOemLaneState = OemVehicleLaneState()
     // One configured send interval plus the next ACK receive window; display only.
     private val feedbackDisplayBudgetMs = BuildConfig.NAV_ASSIST_V2_INTERVAL_MS
@@ -153,6 +157,7 @@ class NavigationActivity : Activity() {
         simulationButton = actionButton("模拟导航")
         speechButton = actionButton("静音")
         routeSwitchButton = actionButton("切换路线")
+        sourceButton = actionButton("来源：API").apply { textSize = 14f }
         routeChoiceRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -231,6 +236,11 @@ class NavigationActivity : Activity() {
         addView(overviewButton, leftButtonParams(stackLevel = 1))
         addView(settingsButton, leftButtonParams(stackLevel = 2))
         addView(debugButton, leftButtonParams(stackLevel = 3))
+        addView(sourceButton, FrameLayout.LayoutParams(dp(132), dp(52)).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            marginEnd = dp(16)
+            bottomMargin = dp(16)
+        })
     }
 
     private fun leftButtonParams(stackLevel: Int) = FrameLayout.LayoutParams(dp(52), dp(52)).apply {
@@ -252,6 +262,7 @@ class NavigationActivity : Activity() {
     }
 
     private fun configureActions() {
+        sourceButton.setOnClickListener { runtimeService?.toggleNavigationDataSource() }
         endNavigationButton.setOnClickListener { runtimeService?.stopNavigation() }
         realtimeButton.setOnClickListener {
             if (runtimeService?.startRealtime() != true) toast("启动导航失败")
@@ -293,6 +304,7 @@ class NavigationActivity : Activity() {
     }
 
     private fun requestRouteIfNeeded(service: NavigationForegroundService) {
+        if (service.navigationDataSource.value == NavigationDataSource.AMAP_AUTO) return
         if (routeRequestSent || service.stateStore.state.value.navigationMode != NavigationMode.IDLE) return
         if (!intent.hasExtra(EXTRA_DESTINATION_LATITUDE) || !intent.hasExtra(EXTRA_DESTINATION_LONGITUDE)) {
             finish()
@@ -312,7 +324,16 @@ class NavigationActivity : Activity() {
     private fun observeRuntime(service: NavigationForegroundService) {
         cancelRuntimeObservation()
         stateJob = activityScope.launch {
-            service.stateStore.state.collect(::renderNavigationState)
+            combine(
+                service.stateStore.state,
+                service.amapAutoNavigationState,
+                service.navigationDataSource,
+            ) { apiState, autoState, source -> Triple(apiState, autoState, source) }
+                .collect { (apiState, autoState, source) ->
+                    currentSource = source
+                    sourceButton.text = if (source == NavigationDataSource.AMAP_AUTO) "来源：车机" else "来源：API"
+                    renderNavigationState(if (source == NavigationDataSource.AMAP_AUTO) autoState ?: NavigationState() else apiState)
+                }
         }
         oemLaneJob = activityScope.launch {
             service.oemVehicleLaneState.withDisplayExpiry(feedbackDisplayBudgetMs, SystemClock::elapsedRealtime).collect { state ->
@@ -327,6 +348,12 @@ class NavigationActivity : Activity() {
         currentState = state
         laneGuidanceView.render(state, currentOemLaneState)
         renderNavigationSummary(state)
+        if (currentSource == NavigationDataSource.AMAP_AUTO) {
+            routeActions.visibility = View.GONE
+            routeChoiceScroll.visibility = View.GONE
+            previousMode = state.navigationMode
+            return
+        }
         when (state.navigationMode) {
             NavigationMode.IDLE -> {
                 routeChoicesExpanded = false
@@ -441,6 +468,14 @@ class NavigationActivity : Activity() {
     }
 
     private fun renderNavigationSummary(state: NavigationState) {
+        if (currentSource == NavigationDataSource.AMAP_AUTO && !state.routePlanned) {
+            navigationSummaryView.text = listOfNotNull(
+                "高德车机 · 等待导航",
+                state.currentRoad?.takeIf(String::isNotBlank),
+            ).joinToString("\n")
+            navigationSummaryView.visibility = View.VISIBLE
+            return
+        }
         if (!state.routePlanned || state.navigationMode == NavigationMode.IDLE) {
             navigationSummaryView.visibility = View.GONE
             return
@@ -462,7 +497,12 @@ class NavigationActivity : Activity() {
             val countdown = it.countdownSeconds?.minus(elapsedSeconds)?.coerceAtLeast(0)
             listOfNotNull(direction, "$status${countdown?.let { value -> " $value 秒" }.orEmpty()}").joinToString(" · ")
         }
-        navigationSummaryView.text = listOfNotNull(trip.takeIf(String::isNotBlank), light).joinToString("\n")
+        val source = "高德车机".takeIf { currentSource == NavigationDataSource.AMAP_AUTO }
+        val maneuver = if (currentSource == NavigationDataSource.AMAP_AUTO) {
+            listOfNotNull(state.nextRoad, state.nextTurnDistanceMeters?.let { "$it 米" })
+                .joinToString(" · ").takeIf(String::isNotBlank)
+        } else null
+        navigationSummaryView.text = listOfNotNull(source, maneuver, trip.takeIf(String::isNotBlank), light).joinToString("\n")
         navigationSummaryView.visibility = if (navigationSummaryView.text.isEmpty()) View.GONE else View.VISIBLE
     }
 

@@ -54,6 +54,7 @@ import com.garan.tesnav.search.AmapAddressLookupGateway
 import com.garan.tesnav.search.LocationFailure
 import com.garan.tesnav.search.selectLocationFailure
 import com.garan.tesnav.service.NavigationForegroundService
+import com.garan.tesnav.service.NavigationDataSource
 import com.garan.tesnav.ui.NavigationStateDialog
 import com.garan.tesnav.ui.SettingsDialog
 import com.garan.tesnav.config.AmapConfiguration
@@ -74,6 +75,7 @@ class MainActivity : Activity(), AddressLookupView {
     private lateinit var planButton: Button
     private lateinit var settingsButton: ImageButton
     private lateinit var debugButton: ImageButton
+    private lateinit var sourceButton: Button
     private lateinit var destinationInput: EditText
     private lateinit var searchButton: Button
     private lateinit var searchProgress: ProgressBar
@@ -92,6 +94,7 @@ class MainActivity : Activity(), AddressLookupView {
     private var runtimeService: NavigationForegroundService? = null
     private var bindRequested = false
     private var stateJob: Job? = null
+    private var sourceJob: Job? = null
     private var locationStatusJob: Job? = null
     private var suggestionJob: Job? = null
     private var currentState = NavigationState()
@@ -166,6 +169,7 @@ class MainActivity : Activity(), AddressLookupView {
         debugButton = floatingIconButton(R.drawable.ic_bug_report, "查看 NavigationState").apply {
             isEnabled = false
         }
+        sourceButton = actionButton("来源：API").apply { textSize = 14f }
         destinationInput = EditText(this).apply {
             hint = "输入目的地地址或地点"
             setSingleLine(true)
@@ -241,6 +245,11 @@ class MainActivity : Activity(), AddressLookupView {
         })
         addView(settingsButton, leftButtonParams(stackLevel = 2))
         addView(debugButton, leftButtonParams(stackLevel = 3))
+        addView(sourceButton, FrameLayout.LayoutParams(dp(132), dp(52)).apply {
+            gravity = Gravity.BOTTOM or Gravity.START
+            marginStart = dp(16)
+            bottomMargin = dp(16)
+        })
     }
 
     private fun leftButtonParams(stackLevel: Int) = FrameLayout.LayoutParams(dp(52), dp(52)).apply {
@@ -312,6 +321,10 @@ class MainActivity : Activity(), AddressLookupView {
     }
 
     private fun configureActions() {
+        sourceButton.setOnClickListener {
+            val source = runtimeService?.toggleNavigationDataSource() ?: return@setOnClickListener
+            if (source == NavigationDataSource.AMAP_AUTO) openNavigationPage()
+        }
         planButton.setOnClickListener { destination?.let(::openNavigationPage) }
         searchButton.setOnClickListener(::searchDestinationAddress)
         destinationInput.setOnEditorActionListener { _, actionId, _ ->
@@ -603,6 +616,11 @@ class MainActivity : Activity(), AddressLookupView {
                 previousMode = state.navigationMode
             }
         }
+        sourceJob = activityScope.launch {
+            service.navigationDataSource.collect { source ->
+                sourceButton.text = if (source == NavigationDataSource.AMAP_AUTO) "来源：车机" else "来源：API"
+            }
+        }
     }
 
     private fun clearDestination() {
@@ -641,6 +659,8 @@ class MainActivity : Activity(), AddressLookupView {
     private fun cancelRuntimeObservation() {
         stateJob?.cancel()
         stateJob = null
+        sourceJob?.cancel()
+        sourceJob = null
     }
 
     private fun hasLocationPermission(): Boolean =

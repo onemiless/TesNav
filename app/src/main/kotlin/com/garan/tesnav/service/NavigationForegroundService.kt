@@ -43,7 +43,7 @@ import com.garan.tesnav.homeassistant.TeslaNavigationDestination
 import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.model.NavigationState
 import com.garan.tesnav.model.OemVehicleLaneState
-import com.garan.tesnav.model.TrafficLightObservation
+import com.garan.tesnav.util.NavigationTrace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -96,6 +96,12 @@ class NavigationForegroundService : Service() {
     val navAssistV2LastError: StateFlow<String?> = mutableNavAssistV2LastError.asStateFlow()
     private val mutableOemVehicleLaneState = MutableStateFlow(OemVehicleLaneState())
     val oemVehicleLaneState: StateFlow<OemVehicleLaneState> = mutableOemVehicleLaneState.asStateFlow()
+    private val mutableAmapAutoBroadcasts = MutableStateFlow<Map<String, AmapAutoBroadcastSnapshot>>(emptyMap())
+    internal val amapAutoBroadcasts: StateFlow<Map<String, AmapAutoBroadcastSnapshot>> = mutableAmapAutoBroadcasts.asStateFlow()
+    private val mutableAmapAutoNavigationState = MutableStateFlow<NavigationState?>(null)
+    internal val amapAutoNavigationState: StateFlow<NavigationState?> = mutableAmapAutoNavigationState.asStateFlow()
+    private val mutableNavigationDataSource = MutableStateFlow(NavigationDataSource.AMAP_API)
+    val navigationDataSource: StateFlow<NavigationDataSource> = mutableNavigationDataSource.asStateFlow()
 
     private val mutableTeslaSyncEnabled = MutableStateFlow(false)
     val teslaSyncEnabled: StateFlow<Boolean> = mutableTeslaSyncEnabled.asStateFlow()
@@ -108,6 +114,7 @@ class NavigationForegroundService : Service() {
     private var lastNotificationContent: String? = null
     private var lastNavAssistDiagnosticKey: String? = null
     private var trafficLightReceiver: BroadcastReceiver? = null
+    private val amapAutoSeenKeyTypes = mutableSetOf<Int>()
 
     inner class LocalBinder : Binder() {
         fun getService(): NavigationForegroundService = this@NavigationForegroundService
@@ -115,6 +122,9 @@ class NavigationForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        mutableNavigationDataSource.value = runCatching {
+            NavigationDataSource.valueOf(preferences().getString(NAVIGATION_SOURCE_KEY, null).orEmpty())
+        }.getOrDefault(NavigationDataSource.AMAP_API)
         createNotificationChannel()
         promoteToForeground("正在启动导航服务")
         if (!AmapConfiguration.prepare(applicationContext)) {
@@ -257,6 +267,18 @@ class NavigationForegroundService : Service() {
         if (enabled) startHomeAssistant() else homeAssistantClient.stop()
     }
 
+    fun toggleNavigationDataSource(): NavigationDataSource {
+        val source = if (mutableNavigationDataSource.value == NavigationDataSource.AMAP_API) {
+            NavigationDataSource.AMAP_AUTO
+        } else {
+            NavigationDataSource.AMAP_API
+        }
+        mutableNavigationDataSource.value = source
+        preferences().edit().putString(NAVIGATION_SOURCE_KEY, source.name).apply()
+        NavigationTrace.append(filesDir, "source selected=${source.name.lowercase()}", AMAP_AUTO_TRACE_TAG)
+        return source
+    }
+
     override fun onDestroy() {
         trafficLightReceiver?.let { runCatching { unregisterReceiver(it) } }
         trafficLightReceiver = null
@@ -276,18 +298,50 @@ class NavigationForegroundService : Service() {
     private fun registerTrafficLightReceiver() {
         if (trafficLightReceiver != null) return
         val receiver = object : BroadcastReceiver() {
+            @Suppress("DEPRECATION")
             override fun onReceive(context: Context?, intent: Intent?) {
                 val extras = intent?.extras ?: return
-                if (extras.get("KEY_TYPE")?.toString()?.toIntOrNull() != 60073) return
-                val status = extras.get("trafficLightStatus")?.toString()?.toIntOrNull() ?: return
-                stateStore.update {
-                    copy(trafficLight = TrafficLightObservation(
-                        status = status,
-                        direction = extras.get("dir")?.toString()?.toIntOrNull(),
-                        countdownSeconds = extras.get("redLightCountDownSeconds")?.toString()?.toIntOrNull(),
-                        observedAtMs = System.currentTimeMillis(),
-                    ))
+                val values = extras.keySet().associateWith { key -> runCatching { extras.get(key) }.getOrNull() }
+                val observedAtMs = System.currentTimeMillis()
+                val snapshot = AmapAutoBroadcast.capture(intent.action, values, observedAtMs)
+                mutableAmapAutoBroadcasts.value = AmapAutoBroadcast.retain(mutableAmapAutoBroadcasts.value, snapshot)
+
+                val keyType = snapshot.keyType
+                if (keyType != null && amapAutoSeenKeyTypes.add(keyType)) {
+                    NavigationTrace.append(
+                        filesDir,
+                        "received action=${intent.action} keyType=$keyType keys=${snapshot.extras.keys.sorted().joinToString(",")}",
+                        AMAP_AUTO_TRACE_TAG,
+                    )
                 }
+                if (keyType == AMAP_AUTO_NAVIGATION_TYPE) {
+                    mutableAmapAutoNavigationState.value = AmapAutoBroadcast.navigation(
+                        previous = mutableAmapAutoNavigationState.value,
+                        extras = values,
+                        observedAtMs = observedAtMs,
+                        receivedElapsedMs = android.os.SystemClock.elapsedRealtime(),
+                    )
+                }
+                if (keyType != AMAP_AUTO_TRAFFIC_LIGHT_TYPE) return
+
+                val observation = AmapAutoBroadcast.trafficLight(values, observedAtMs)
+                if (observation == null) {
+                    NavigationTrace.append(
+                        filesDir,
+                        "trafficLight ignored keys=${snapshot.extras.keys.sorted().joinToString(",")}",
+                        AMAP_AUTO_TRACE_TAG,
+                    )
+                    return
+                }
+                stateStore.update { copy(trafficLight = observation) }
+                mutableAmapAutoNavigationState.value = (mutableAmapAutoNavigationState.value ?: NavigationState())
+                    .copy(trafficLight = observation)
+                NavigationTrace.append(
+                    filesDir,
+                    "trafficLight status=${observation.status} direction=${observation.direction} " +
+                        "countdown=${observation.countdownSeconds}",
+                    AMAP_AUTO_TRACE_TAG,
+                )
             }
         }
         val filter = IntentFilter().apply {
@@ -296,6 +350,7 @@ class NavigationForegroundService : Service() {
         }
         ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
         trafficLightReceiver = receiver
+        NavigationTrace.append(filesDir, "receiver registered", AMAP_AUTO_TRACE_TAG)
     }
 
     /** Rebuilds both exporters so a token change takes effect without reinstalling or restarting the app. */
@@ -599,6 +654,10 @@ class NavigationForegroundService : Service() {
     private fun pendingFlags(): Int = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
     companion object {
+        private const val AMAP_AUTO_NAVIGATION_TYPE = 10001
+        private const val AMAP_AUTO_TRAFFIC_LIGHT_TYPE = 60073
+        private const val AMAP_AUTO_TRACE_TAG = "TesNav-AmapAuto"
+        private const val NAVIGATION_SOURCE_KEY = "navigation_data_source"
         private const val NAVASSIST_DIAGNOSTIC_TAG = "TesNavNavState"
         private const val ACTION_STOP_SERVICE = "com.garan.tesnav.action.STOP_RUNTIME"
         private const val CHANNEL_ID = "tesnav_navigation_runtime"
